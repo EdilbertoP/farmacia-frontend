@@ -1,3 +1,7 @@
+# Integración de Gemini
+
+Consulta **[INTEGRACION_GEMINI.md](INTEGRACION_GEMINI.md)** para activar la IA en Supabase y Vercel, configurar la API key y probar la confirmación del vendedor.
+
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
 ## Getting Started

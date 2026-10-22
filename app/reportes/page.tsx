@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/utils/supabase/client";
+import DemandaIA from "@/components/DemandaIA";
 
 type Semana = { semana: string; ingresos: number; unidades: number };
 
@@ -88,6 +89,8 @@ export default function Reportes() {
       </div>
 
       {error && <p className="text-red-500 mb-4">Error: {error}</p>}
+
+      <DemandaIA productos={demanda} />
 
       <div className="grid gap-4 md:grid-cols-3 mb-8">
         <div className={tarjeta}>

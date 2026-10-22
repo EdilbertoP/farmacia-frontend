@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/utils/supabase/client";
+import ClasificacionIA from "@/components/ClasificacionIA";
 
 type Categoria = { id: number; nombre: string };
 
@@ -155,6 +156,9 @@ export default function Productos() {
           <input className={input} value={form.descripcion}
             onChange={(e) => cambiar("descripcion", e.target.value)} />
         </label>
+
+        <ClasificacionIA key={form.id ?? "nuevo"} nombre={form.nombre} descripcion={form.descripcion}
+          onConfirmar={(id) => { cambiar("categoria_id", id); setMensaje("Categoría confirmada en el formulario. Guarda el producto para aplicar el cambio."); }} />
 
         <label className="flex flex-col gap-1 text-sm">
           Precio (Q)
