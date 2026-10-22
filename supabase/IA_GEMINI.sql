@@ -59,4 +59,27 @@ end;
 $$;
 revoke all on function public.ia_reservar_consulta() from public, anon;
 grant execute on function public.ia_reservar_consulta() to authenticated;
+
+-- Indicador de uso: solo información de la sesión actual, sin gastar consultas.
+create or replace function public.ia_estado_uso()
+returns jsonb
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select jsonb_build_object(
+    'intentos', coalesce(u.intentos, 0),
+    'limite', 30,
+    'restantes', greatest(0, 30 - coalesce(u.intentos, 0)),
+    'espera_segundos', case when u.ultima_consulta is null then 0
+      else greatest(0, ceil(extract(epoch from (u.ultima_consulta + interval '10 seconds' - now())))::integer) end
+  )
+  from (select auth.uid() as id) sesion
+  left join public.ia_uso_diario u
+    on u.usuario_id = sesion.id and u.dia = (now() at time zone 'America/Guatemala')::date
+  where sesion.id is not null;
+$$;
+revoke all on function public.ia_estado_uso() from public, anon;
+grant execute on function public.ia_estado_uso() to authenticated;
 commit;

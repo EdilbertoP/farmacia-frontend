@@ -19,6 +19,8 @@ function load(file, mocks = {}) {
 }
 const domain = load('lib/ia/domain.ts');
 const gemini = load('lib/ia/gemini.ts', { 'server-only': {}, './domain': domain });
+const http = load('lib/ia/http.ts', { './domain': domain });
+const cuota = load('lib/ia/cuota.ts', { 'server-only': {}, './domain': domain });
 const categories = [{ id: 1, nombre: 'Higiene' }];
 const row = { producto_id: 2, producto: 'Jabón', stock_actual: 10, stock_minimo: 2, vendidos_30_dias: 15 };
 function req(body, origin = 'https://farmacia.example') {
@@ -40,6 +42,7 @@ function route(db, generate = async () => ({ value: { texto: 'Informe orientativ
   return load('app/api/ia/route.ts', {
     '@/utils/supabase/server': { createClient: async () => db }, '@/lib/ia/domain': domain,
     '@/lib/ia/gemini': { configuracionGemini: () => ({}), generarJSON: generate },
+    '@/lib/ia/http': http, '@/lib/ia/cuota': cuota,
   }).POST;
 }
 
@@ -100,16 +103,16 @@ test('classification API returns a suggestion only and rejects invented category
 });
 test('Gemini wrapper protects key, handles quota and rejects incomplete/invalid responses', async () => {
   const oldFetch = global.fetch;
-  process.env.GEMINI_API_KEY = 'TEST_SECRET_ONLY'; process.env.GEMINI_MODEL = 'test-model';
+  process.env.GEMINI_API_KEY = 'AIzaTEST_SECRET_ONLY_12345'; process.env.GEMINI_MODEL = 'gemini-test';
   try {
     global.fetch = async (url, options) => {
-      assert.ok(!url.includes('TEST_SECRET_ONLY'));
-      assert.equal(options.headers['x-goog-api-key'], 'TEST_SECRET_ONLY');
+      assert.ok(!url.includes('AIzaTEST_SECRET_ONLY_12345'));
+      assert.equal(options.headers['x-goog-api-key'], 'AIzaTEST_SECRET_ONLY_12345');
       return Response.json({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: '{"texto":"Bien"}' }] } }] });
     };
     assert.equal((await gemini.generarJSON('Prueba', {}, {})).value.texto, 'Bien');
-    global.fetch = async () => new Response('TEST_SECRET_ONLY', { status: 429 });
-    await assert.rejects(gemini.generarJSON('Prueba', {}, {}), (e) => e.status === 429 && !e.message.includes('TEST_SECRET_ONLY'));
+    global.fetch = async () => new Response('AIzaTEST_SECRET_ONLY_12345', { status: 429 });
+    await assert.rejects(gemini.generarJSON('Prueba', {}, {}), (e) => e.status === 429 && !e.message.includes('AIzaTEST_SECRET_ONLY_12345'));
     for (const candidate of [{ finishReason: 'MAX_TOKENS' }, { finishReason: 'STOP', content: { parts: [{ text: 'invalid json' }] } }]) {
       global.fetch = async () => Response.json({ candidates: [candidate] });
       await assert.rejects(gemini.generarJSON('Prueba', {}, {}), (e) => e.status === 502);

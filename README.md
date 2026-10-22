@@ -1,4 +1,6 @@
-# Integración de Gemini
+Consulta **[CHATBOT_IA.md](CHATBOT_IA.md)** para activar el botón global, preguntas rápidas, contexto y comprobación de conexión con `gemini-3.5-flash-lite`.
+
+# Asistente IA e integración de Gemini
 
 Consulta **[INTEGRACION_GEMINI.md](INTEGRACION_GEMINI.md)** para activar la IA en Supabase y Vercel, configurar la API key y probar la confirmación del vendedor.
 

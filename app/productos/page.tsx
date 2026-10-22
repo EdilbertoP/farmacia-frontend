@@ -237,6 +237,10 @@ export default function Productos() {
                   <button onClick={() => editar(p)} className="border rounded px-2 py-1">
                     Editar
                   </button>
+                  <button type="button" className="border rounded px-2 py-1 ml-2 text-blue-600"
+                    onClick={() => window.dispatchEvent(new CustomEvent("farmacia:asistente", { detail: { productoId: p.id, nombre: p.nombre } }))}>
+                    Consultar IA
+                  </button>
                 </td>
               </tr>
             ))}

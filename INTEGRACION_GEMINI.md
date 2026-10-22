@@ -1,12 +1,14 @@
 # Integración Gemini — Farmacia La Salud
 
+Este proyecto incluye clasificación, informes y un chatbot. Para el chatbot y las nuevas validaciones consulta **[CHATBOT_IA.md](CHATBOT_IA.md)**.
+
 Este proyecto ya incluye la integración. Para activarla en tu despliegue debes ejecutar el SQL incluido, configurar tu API key y subir estos cambios a tu repositorio conectado con Vercel.
 
 ## 1. Preparar Supabase
 
 En tu proyecto de Supabase abre **SQL Editor → New query**, copia el contenido de `supabase/IA_GEMINI.sql` y pulsa **Run**. El script puede ejecutarse de nuevo.
 
-Crea dos tablas nuevas y una función:
+Crea dos tablas nuevas y las funciones de control de uso:
 
 - `ia_informes_demanda`: informes guardados después de la revisión humana. Cada usuario solo consulta sus propios informes. Conserva texto original, texto revisado, modelo y datos usados.
 - `ia_uso_diario`: contador interno de intentos de consulta.
@@ -39,7 +41,7 @@ En **tu proyecto → Settings → Environment Variables**:
 | `NEXT_PUBLIC_SUPABASE_URL` | Conserva la URL de Supabase que ya utilizas. |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Conserva la clave pública de Supabase que ya utilizas. |
 | `GEMINI_API_KEY` | Tu clave de Google AI Studio. Solo servidor. |
-| `GEMINI_MODEL` | Identificador del modelo de texto habilitado en tu proyecto, por ejemplo `gemini-2.5-flash` si aparece disponible en tu cuota gratuita. |
+| `GEMINI_MODEL` | Identificador del modelo de texto habilitado en tu proyecto, por ejemplo `gemini-3.5-flash-lite` si aparece disponible en tu cuota gratuita. |
 
 Configura Production y también Preview si usarás despliegues de prueba. No antepongas `NEXT_PUBLIC_` a la clave Gemini. No hace falta instalar un SDK nuevo: se usa la API REST desde el servidor.
 
@@ -80,7 +82,7 @@ Ejemplo ilustrativo: 15 unidades en 30 días → 4 unidades estimadas para 7 dí
 
 Es una proyección sencilla del ritmo reciente, no un modelo estadístico entrenado. No permite afirmar tendencias, estacionalidad ni intervalos de confianza. Los días sin stock pueden haber ocultado demanda. La redacción de un modelo puede contener errores: el vendedor debe revisar las cifras y el texto antes de confirmar.
 
-Se envían a Google únicamente el nombre y la descripción para clasificación, el catálogo de categorías, o los indicadores agregados del producto para demanda. No se envían nombres de clientes, correos, usuarios ni pedidos individuales. El contador registra uso automáticamente; no representa un guardado comercial ni una confirmación del vendedor.
+Se envían a Google únicamente el nombre y la descripción para clasificación, el catálogo de categorías, o los indicadores agregados del producto para demanda. El chatbot además envía tu pregunta y los últimos seis mensajes para interpretar la intención; evita escribir datos personales o claves. No consulta tablas de usuarios o clientes ni envía pedidos individuales a Gemini. El contador registra uso automáticamente; no representa un guardado comercial ni una confirmación del vendedor.
 
 ## 6. Verificación
 
@@ -90,7 +92,7 @@ Ejecuta:
 npm ci
 npm run build
 npx tsc --noEmit
-node --test tests/ia.test.cjs
+node --test tests/ia.test.cjs tests/chat.test.cjs
 npx eslint components lib/ia utils/supabase/server.ts utils/consultar-ia.ts app/api/ia
 ```
 

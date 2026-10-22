@@ -1,5 +1,5 @@
 export class IAError extends Error {
-  constructor(message: string, public status = 400) { super(message); }
+  constructor(message: string, public status = 400, public codigo = "SOLICITUD_INVALIDA", public reintentarEn?: number) { super(message); }
 }
 
 export type Categoria = { id: number; nombre: string };

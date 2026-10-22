@@ -1,0 +1,70 @@
+.farmaciaAI-root { --ai-ink:#162b3b; --ai-muted:#536c7b; --ai-border:#dce7ed; --ai-blue:#1565c0; --ai-green:#117b65; font-family:var(--font-geist-sans),Arial,sans-serif; color:var(--ai-ink); font-size:14px; line-height:1.5; }
+.farmaciaAI-root button,.farmaciaAI-root textarea,.farmaciaAI-root a { font:inherit; }
+.farmaciaAI-root button { cursor:pointer; }
+.farmaciaAI-root button:disabled { cursor:not-allowed; opacity:.5; }
+.farmaciaAI-root button:focus-visible,.farmaciaAI-root textarea:focus-visible,.farmaciaAI-root a:focus-visible,.farmaciaAI-root summary:focus-visible,.farmaciaAI-tableWrap:focus-visible { outline:3px solid #64b7ef; outline-offset:3px; }
+.farmaciaAI-trigger { position:fixed; z-index:80; right:24px; bottom:24px; display:flex; align-items:center; gap:10px; border:1px solid #2476a1; border-radius:999px; padding:14px 20px; background:linear-gradient(110deg,#126e61,#155ba7); box-shadow:0 6px 25px #123c5b35; color:white; font-weight:650!important; transition:transform .2s; }
+.farmaciaAI-trigger:hover { transform:translateY(-2px); }
+.farmaciaAI-triggerDot { width:7px; height:7px; border-radius:50%; background:#a2f1ce; margin-left:3px; }
+.farmaciaAI-backdrop { position:fixed; inset:0; z-index:81; background:#0b25392b; backdrop-filter:blur(2px); }
+.farmaciaAI-panel { position:fixed; z-index:82; right:24px; bottom:98px; width:min(580px,calc(100vw - 32px)); height:min(780px,calc(100dvh - 125px)); display:flex; flex-direction:column; overflow:hidden; border:1px solid var(--ai-border); border-radius:22px; background:#fff; box-shadow:0 20px 80px #123c5b40; }
+.farmaciaAI-header { display:flex; align-items:center; gap:12px; padding:20px; background:linear-gradient(115deg,#effaf5,#edf5ff); border-bottom:1px solid var(--ai-border); flex-shrink:0; }
+.farmaciaAI-avatar { display:grid; place-items:center; width:44px; height:44px; border-radius:14px; color:#fff; background:linear-gradient(135deg,#0b8669,#2470b6); }
+.farmaciaAI-heading { flex:1; min-width:0; }
+.farmaciaAI-heading h2 { font-size:19px; font-weight:700; letter-spacing:-.4px; margin:0; }
+.farmaciaAI-heading p { margin:1px 0 0; font-size:12px; color:var(--ai-muted); }
+.farmaciaAI-iconButton { display:grid; place-items:center; width:32px; height:32px; font-size:26px!important; background:#ffffffa6; border:1px solid var(--ai-border); border-radius:10px; color:var(--ai-muted); }
+.farmaciaAI-toolbar { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:6px; padding:9px 18px; font-size:11px; border-bottom:1px solid #edf2f5; flex-shrink:0; }
+.farmaciaAI-toolbar span { display:flex; align-items:center; gap:6px; color:var(--ai-muted); }
+.farmaciaAI-toolbar button { color:var(--ai-blue); background:none; border:none; padding:3px; }
+.farmaciaAI-dot,.farmaciaAI-dotOk { width:6px; height:6px; border-radius:50%; background:#879aa6; }
+.farmaciaAI-dotOk { background:#149a71; }
+.farmaciaAI-messages { overflow-y:auto; overscroll-behavior:contain; flex:1; min-height:60px; padding:20px; background:#f8fbfd; scrollbar-width:thin; }
+.farmaciaAI-welcome { margin-bottom:22px; }
+.farmaciaAI-eyebrow { display:flex; align-items:center; gap:7px; color:var(--ai-green); font-size:10px; font-weight:750; letter-spacing:1.1px; }
+.farmaciaAI-welcome h3 { font-size:23px; font-weight:700; line-height:1.3; letter-spacing:-.7px; margin:10px 0 8px; }
+.farmaciaAI-welcome p { color:var(--ai-muted); font-size:13px; margin:0; }
+.farmaciaAI-quickGrid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:15px 0 10px; }
+.farmaciaAI-quickGrid button { display:flex; align-items:center; justify-content:space-between; gap:8px; text-align:left; background:white; border:1px solid var(--ai-border); border-radius:11px; padding:11px 12px; font-size:12px; font-weight:550; color:var(--ai-ink); }
+.farmaciaAI-quickGrid button:hover { border-color:#6bb6bd; background:#f2fbf8; }
+.farmaciaAI-quickGrid span { color:var(--ai-green); }
+.farmaciaAI-welcome .farmaciaAI-example { font-size:11px; }
+.farmaciaAI-message { margin:12px 0; border-radius:14px; padding:13px 14px; max-width:100%; overflow-wrap:anywhere; }
+.farmaciaAI-author { display:block; font-size:10px; font-weight:700; margin-bottom:5px; letter-spacing:.3px; opacity:.75; }
+.farmaciaAI-message p { white-space:pre-wrap; margin:0; font-size:13px; }
+.farmaciaAI-assistant { background:#fff; border:1px solid var(--ai-border); border-top-left-radius:3px; }
+.farmaciaAI-user { background:#e8f2ff; border:1px solid #d3e5fc; border-bottom-right-radius:3px; margin-left:38px; }
+.farmaciaAI-error { background:#fff7f5; border-color:#f1c7bd; color:#9a3926; }
+.farmaciaAI-message .farmaciaAI-note { color:var(--ai-muted); font-size:11px; margin-top:12px; border-left:2px solid #aacdc5; padding-left:9px; }
+.farmaciaAI-tableWrap { max-width:100%; overflow-x:auto; border:1px solid var(--ai-border); border-radius:9px; margin-top:12px; scrollbar-width:thin; }
+.farmaciaAI-tableWrap table { width:100%; border-collapse:collapse; font-size:11px; text-align:left; }
+.farmaciaAI-tableWrap th { padding:8px 9px; background:#eff6f8; white-space:nowrap; font-weight:650; }
+.farmaciaAI-tableWrap td { padding:8px 9px; border-top:1px solid #e8eff3; min-width:65px; }
+.farmaciaAI-tableWrap td:first-child { min-width:125px; }
+.farmaciaAI-source { display:flex; flex-direction:column; gap:2px; color:#637c89; font-size:10px; border-top:1px solid #edf2f5; margin-top:12px; padding-top:8px; }
+.farmaciaAI-choices { display:flex; flex-direction:column; gap:6px; margin-top:12px; }
+.farmaciaAI-choices button { display:flex; flex-direction:column; text-align:left; padding:9px 11px; border:1px solid #b9dcd1; background:#f2faf6; border-radius:9px; color:#155d4d; font-size:12px; }
+.farmaciaAI-choices span { font-size:10px; color:#526d63; }
+.farmaciaAI-thinking { display:flex; align-items:center; gap:8px; color:var(--ai-muted); font-size:12px; padding:12px 0; }
+.farmaciaAI-thinking>span { width:13px; height:13px; border:2px solid #c8dedc; border-top-color:#117b65; border-radius:50%; animation:farmaciaAIspin .8s linear infinite; flex-shrink:0; }
+@keyframes farmaciaAIspin { to { transform:rotate(360deg); } }
+.farmaciaAI-selection { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:7px 18px; border-top:1px solid #dceae3; color:#245d48; background:#eff9f3; font-size:11px; }
+.farmaciaAI-selection button { background:none; border:none; font-size:20px; padding:0 5px; }
+.farmaciaAI-composer { padding:14px 18px 12px; background:white; border-top:1px solid var(--ai-border); flex-shrink:0; }
+.farmaciaAI-composer form { display:flex; align-items:flex-end; gap:9px; border:1px solid #bccfd9; border-radius:12px; padding:8px; background:white; }
+.farmaciaAI-composer textarea { min-width:0; flex:1; border:none; padding:2px 4px; resize:none; color:var(--ai-ink); background:transparent; font-size:13px; max-height:90px; }
+.farmaciaAI-composer textarea::placeholder { color:#738b99; }
+.farmaciaAI-composer form>button { display:grid; place-items:center; height:36px; width:36px; flex-shrink:0; color:white; background:linear-gradient(125deg,#117b65,#1565b4); border:none; border-radius:9px; }
+.farmaciaAI-composerMeta { display:flex; justify-content:space-between; gap:8px; font-size:10px; color:#68818f; margin:6px 2px; }
+.farmaciaAI-connection { border-top:1px solid #edf2f5; padding-top:8px; font-size:10px; color:var(--ai-muted); max-height:160px; overflow-y:auto; }
+.farmaciaAI-connection summary { cursor:pointer; font-size:11px; }
+.farmaciaAI-connection p { margin:5px 0; }
+.farmaciaAI-connection button,.farmaciaAI-recovery button,.farmaciaAI-recovery a { border:1px solid #bdd6e9; background:#f1f7fc; color:#125a99; padding:6px 9px; border-radius:7px; font-size:11px; }
+.farmaciaAI-connectionError { color:#a03923; }
+.farmaciaAI-recovery { padding:3px 0 8px; font-size:12px; }
+.farmaciaAI-disclaimer { font-size:10px; color:#718793; margin:7px 0 0; }
+.farmaciaAI-srOnly { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+@media(max-width:600px) { .farmaciaAI-trigger { right:14px; bottom:max(14px,env(safe-area-inset-bottom)); padding:12px 16px; } .farmaciaAI-panel { right:8px; left:8px; top:8px; bottom:8px; width:auto; height:auto; border-radius:17px; } .farmaciaAI-header { padding:14px; } .farmaciaAI-messages { padding:15px; } .farmaciaAI-composer { padding:10px 12px max(10px,env(safe-area-inset-bottom)); } .farmaciaAI-welcome h3 { font-size:21px; } .farmaciaAI-quickGrid button { padding:9px; font-size:11px; } .farmaciaAI-heading p { font-size:10px; } }
+@media(prefers-reduced-motion:reduce) { .farmaciaAI-root * { animation:none!important; transition:none!important; scroll-behavior:auto!important; } }
+
+.farmaciaAI-transcriptTime { display:block; font-size:10px; color:#637c89; margin-top:7px; }
