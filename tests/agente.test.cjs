@@ -82,3 +82,51 @@ test('forecast respects an explicit historical period and does not fill future w
  const eval0=r.resultado_estructurado.evaluacion[0];
  assert.ok(Date.parse(eval0.hasta)<=Date.parse(r.resultado_estructurado.historia.hasta));
 });
+
+function motorConGemini(respuestas,cap=admin){
+ let llamadas=0,reservas=0;
+ const e=load('lib/ia/chat-engine.ts',{
+  'server-only':{},'./domain':domain,'./chat-domain':cd,
+  './gemini':{generarJSON:async(_instruccion,_datos,esquema)=>{
+   const value=respuestas[llamadas++];assert.ok(value,'Unexpected provider retry');
+   if(llamadas===2)assert.ok(esquema.required.includes('herramienta'));
+   return {value,modelo:'test',consumo:{entrada:10,salida:5,total:15}};
+  }},
+  './cuota':{reservarConsulta:async()=>{reservas++;}},
+  './chat-context':{leerContexto:()=>({uid:'user',ids:[1]}),firmarContexto:()=> 'signed'},
+  './chat-data':{cargarProductos:async()=>productos},
+  './agente/herramientas':herramientas(), './agente/propuestas':prop,
+ });
+ return {consultar:mensaje=>e.resolverChat(database,'user',{mensaje,historial:[],producto_id:1},cap),llamadas:()=>llamadas,reservas:()=>reservas};
+}
+test('missing CRUD extraction recovers once for all reported product creation examples',async()=>{
+ const ejemplos=[
+  ['crea un producto llamado "Gasas esteriles" con 30 unidades','Gasas esteriles',undefined,undefined,30],
+  ['Quiero crear producto gasas','gasas'],
+  ['Crea un producto llamado Gasas Esteriles, código ALC071, precio Q15','Gasas Esteriles','ALC071','15'],
+  ['Crea un producto llamado Alcohol al 70 %, código ALC070, precio Q15.','Alcohol al 70 %','ALC070','15'],
+ ];
+ for(const [mensaje,nombre,codigo,precio,inicial] of ejemplos){
+  const campos=[{campo:'nombre',valor:nombre},...(codigo?[{campo:'codigo',valor:codigo}]:[]),...(precio?[{campo:'precio',valor:precio}]:[])];
+  const motor=motorConGemini([plan({intencion:'propuesta'}),{herramienta:'producto.crear',campos,items:[],busquedas:[nombre],...(inicial!==undefined?{stock_inicial:inicial}:{})}]);
+  const r=await motor.consultar(mensaje);
+  assert.equal(r.borrador.herramienta,'producto.crear');assert.equal(r.borrador.datos.nombre,nombre);
+  assert.equal(r.borrador.datos.id,undefined);assert.equal(r.borrador.datos.stock,undefined);
+  assert.equal(r.borrador.datos.codigo,codigo);assert.equal(r.borrador.datos.precio,precio?Number(precio):undefined);
+  if(inicial!==undefined)assert.match(r.borrador.nota,/30 unidades/);
+  assert.equal(motor.llamadas(),2);assert.equal(motor.reservas(),1);assert.equal(r.consumo.total,30);
+ }
+});
+test('complete creation extraction needs one call and never searches or inherits a selected product',async()=>{
+ const m=motorConGemini([plan({intencion:'propuesta',busquedas:['Producto inexistente'],referencia:'ultimo',continuar_aclaracion:true,operacion:{herramienta:'producto.crear',campos:[{campo:'nombre',valor:'Gasas'}],items:[]}})]);
+ const r=await m.consultar('Crea un producto llamado Gasas');
+ assert.equal(r.borrador.datos.nombre,'Gasas');assert.equal(r.opciones,undefined);assert.equal(m.llamadas(),1);
+});
+test('recovery respects permissions and does not invent an operation for a text confirmation',async()=>{
+ const extraction={herramienta:'producto.crear',campos:[{campo:'nombre',valor:'Gasas'}],items:[],busquedas:[]};
+ await assert.rejects(motorConGemini([plan({intencion:'propuesta'}),extraction],vendedor).consultar('Crea gasas'),e=>e.status===403);
+ const r=await motorConGemini([plan({intencion:'propuesta'}),{herramienta:'ninguna',campos:[],items:[],busquedas:[]}]).consultar('sí');
+ assert.equal(r.intencion,'aclarar');assert.equal(r.borrador,undefined);
+ await assert.rejects(motorConGemini([plan({intencion:'propuesta'}),{...extraction,herramienta:'sql.ejecutar'}]).consultar('Crea gasas'),e=>e.codigo==='INTERPRETACION');
+ assert.throws(()=>cd.validarPeticion(plan({intencion:'propuesta',operacion:{...extraction,stock_inicial:-1}})),e=>e.codigo==='INTERPRETACION');
+});

@@ -52,6 +52,16 @@ Las propuestas pendientes caducan a los 20 minutos. Un registro modificado desde
 
 Si falla la respuesta de red al confirmar, el panel consulta el estado de **la misma propuesta**. Si no logra conocerlo, bloquea el reintento y ofrece **Consultar estado**. No prepares una propuesta nueva para sustituir una operación cuyo resultado todavía es incierto.
 
+## Corrección del alta por lenguaje natural (V3.1)
+
+Se corrigió el caso en que Gemini devolvía `intencion=propuesta` sin `operacion` y el chat repetía «Indica qué deseas crear o modificar». El extractor tiene ejemplos explícitos y, si omite la operación, se recupera una única vez con un esquema específico. La recuperación sigue sin guardar y vuelve a pasar por los permisos y validadores del servidor. Un alta nueva no busca el nombre en el catálogo ni hereda el producto seleccionado.
+
+Prueba con **«crea un producto llamado Gasas esteriles con 30 unidades»**. Con permiso `producto.crear` debe aparecer un borrador con el nombre, los campos pendientes y un aviso de las 30 unidades. Completa código, categoría, precio, mínimo y receta; valida, revisa y confirma el alta. El stock del producto se crea en cero. Después solicita **«Registra una entrada de 30 unidades de [código], motivo inventario inicial»** y revisa/confirma esa segunda operación. No se aplica una entrada automáticamente ni se inventa su motivo.
+
+Esta corrección solo cambia código, pruebas y esta guía: actualiza el repositorio y despliega en Vercel. Si ya instalaste V3, no necesitas repetir la migración SQL ni cambiar las variables. El rol vendedor predeterminado no puede crear productos: prueba el alta con el administrador o con un rol al que se haya concedido explícitamente esa herramienta.
+
+Verificación local: 44 pruebas automatizadas, incluyendo los cuatro ejemplos reportados, permisos insuficientes, confirmación de texto sin ejecución, rechazo de herramientas desconocidas y recuperación sin reservar una segunda tarea. Pruebas de extracción con respuestas de Gemini simuladas; no se usó una clave real ni se modificaron las cuentas de Supabase/Vercel.
+
 ## Operaciones del agente
 
 | Módulo | Funciones disponibles |
@@ -153,7 +163,7 @@ Continúan los límites de tamaño, las lecturas por páginas y el máximo de 50
 
 `ia_eventos` registra solicitudes, resultados, errores seguros, duración, consumo de tokens cuando Google lo devuelve, propuestas, revisiones, confirmaciones/rechazos y cambios ejecutados. El cambio de descripción también tiene un trigger de auditoría para los formularios convencionales. No se guardan conversaciones completas en esta tabla. El administrador debe establecer la política de retención acorde con el proyecto; no se borra auditoría automáticamente.
 
-Los tokens se suman para los pasos que el proveedor informa. El límite local sigue siendo de 30 solicitudes/tareas por usuario y día y 10 segundos entre tareas; algunas tareas analíticas utilizan una llamada para interpretar y otra para redactar. La cuota del proveedor se aplica a todas las llamadas, además del límite local. No se activa facturación ni se cambia de modelo automáticamente.
+Los tokens se suman para los pasos que el proveedor informa. El límite local sigue siendo de 30 solicitudes/tareas por usuario y día y 10 segundos entre tareas; algunas tareas analíticas utilizan una llamada para interpretar y otra para redactar. Si Gemini omite la operación de una propuesta, se realiza como máximo una segunda extracción con esquema obligatorio; cuenta en los tokens del proveedor, pero no reserva otra tarea local. La cuota del proveedor se aplica a todas las llamadas, además del límite local. No se activa facturación ni se cambia de modelo automáticamente.
 
 Las claves se mantienen en Vercel. Se rechazan patrones de API keys y JWT en los datos antes de enviarlos al modelo. Las preguntas, descripciones y textos externos se tratan como datos no confiables; la salida del modelo solo puede proponer herramientas y campos de una lista permitida.
 

@@ -3,7 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { IAError } from "./domain";
 import { generarJSON } from "./gemini";
 import { reservarConsulta } from "./cuota";
-import { ESQUEMA_PETICION, INSTRUCCION_CHAT, validarPeticion, buscarProductos, normalizar } from "./chat-domain";
+import { ESQUEMA_PETICION, ESQUEMA_OPERACION, INSTRUCCION_CHAT, validarPeticion, buscarProductos, normalizar } from "./chat-domain";
 import { leerContexto, firmarContexto, type ContextoChat } from "./chat-context";
 import { cargarProductos, consultarDemanda, consultarVentas } from "./chat-data";
 import {ejecutarAvanzada,catalogos,filtrar} from "./agente/herramientas";
@@ -56,6 +56,28 @@ export async function resolverChat(supabase: SupabaseClient, uid: string, entrad
     }, ESQUEMA_PETICION);
     modelo = interpretation.modelo;consumo=interpretation.consumo;
     peticion = validarPeticion(interpretation.value);
+    // Optional JSON properties can be omitted even in a valid structured response.
+    // Recover only the missing extraction, once, without executing or reserving a new task.
+    if (peticion.intencion === 'propuesta' && !peticion.operacion) {
+      const recovery = await generarJSON(`${INSTRUCCION_CHAT}\nLa primera extracción omitió operacion. Extrae ahora la operación de la pregunta actual. Devuelve herramienta, campos, items y, si está indicado, stock_inicial. Incluye busquedas y categoria solo como datos de identificación. En esta recuperación identifica la herramienta solicitada aunque el rol no la permita: el servidor rechazará los permisos insuficientes antes de preparar cualquier borrador. Si no hay una petición concreta (por ejemplo «sí»), herramienta=ninguna, campos=[], items=[]. No inventes una operación ni interpretes confirmaciones como altas.`, {
+        pregunta_actual: entrada.mensaje, herramientas_permitidas: cap?.herramientas,
+      }, {
+        type:'object', properties:{...ESQUEMA_OPERACION.properties,
+          herramienta:{type:'string',enum:[...ESQUEMA_OPERACION.properties.herramienta.enum,'ninguna']},
+          busquedas:ESQUEMA_PETICION.properties.busquedas, categoria:{type:'string'},
+        },required:['herramienta','campos','items','busquedas'],
+      });
+      if (recovery.consumo) consumo = consumo ? {entrada:consumo.entrada+recovery.consumo.entrada,salida:consumo.salida+recovery.consumo.salida,total:consumo.total+recovery.consumo.total} : recovery.consumo;
+      if (recovery.value.herramienta === 'ninguna') {
+        return responder({intencion:'aclarar',texto:'Indica la acción que necesitas, por ejemplo: «Crea un producto llamado Gasas». Puedes completar los demás datos en el formulario. Confirmar cambios requiere el botón de la propuesta.',modelo,consumo});
+      }
+      const {busquedas,categoria,...operacion} = recovery.value;
+      peticion = validarPeticion({...peticion,operacion,busquedas,...(categoria!==undefined?{categoria}:{})});
+    }
+    // New records do not identify existing products. Orders resolve their own items below.
+    if (peticion.intencion === 'propuesta' && ['producto.crear','categoria.crear','pedido.crear'].includes(peticion.operacion?.herramienta ?? '')) {
+      peticion = {...peticion,busquedas:[],referencia:'ninguna',continuar_aclaracion:false};
+    }
     if(cap&&peticion.intencion==='demanda'&&(peticion.proximo_mes||peticion.periodo==='ultimos_90_dias'||peticion.periodo_historico))peticion={...peticion,intencion:'pronostico'};
     busquedas = peticion.busquedas;
     if (peticion.continuar_aclaracion && ctx.pendiente) {

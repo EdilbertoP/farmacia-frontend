@@ -73,7 +73,7 @@ export async function ejecutarAvanzada(db:SupabaseClient,p:Peticion,productos:Pr
  if(p.intencion==='categorias')return {texto:'Categorías registradas en PostgreSQL.',resultado_estructurado:{categorias:cat.categorias},fuente:'categorias de Supabase'};
  if(p.intencion==='buscar')return {texto:`Encontré ${universo.length} productos. Muestro hasta ${p.limite}.`,filas:universo.slice(0,p.limite).map(x=>({id:x.id,producto:x.nombre,codigo:x.codigo,stock:x.stock,minimo:x.stock_minimo,precio:x.precio})),fuente:'productos y categorías de Supabase'};
  if(p.intencion==='propuesta'){
-  const op=p.operacion;if(!op||!HERRAMIENTAS.includes(op.herramienta))throw new IAError('Indica qué deseas crear o modificar. No se interpretará una confirmación de texto como ejecución.');
+  const op=p.operacion;if(!op||!HERRAMIENTAS.includes(op.herramienta))throw new IAError('La interpretación de la operación quedó incompleta. No se aplicó ningún cambio. Vuelve a intentarlo o utiliza el formulario correspondiente.',502,'INTERPRETACION');
   exigir(cap,op.herramienta);
   if(op.herramienta==='inventario.ajuste'&&/\b(resta|restar|descuenta|descontar|retira|retirar|saca|salida)\b/.test(normalizar(mensaje)))throw new IAError('Un ajuste requiere el conteo físico final. No se convierte una salida o resta en un ajuste. Usa un pedido o indica el conteo real.',422,'DATOS_INVALIDOS');
   const d=datosCampos(p);
@@ -87,7 +87,9 @@ export async function ejecutarAvanzada(db:SupabaseClient,p:Peticion,productos:Pr
    if(!op.items.length)return {texto:'Indica los productos y sus cantidades para preparar el pedido. No se descontó inventario.'};
    const items:Datos[]=[];for(const it of op.items){const found=buscarProductos(it.busqueda,productos);if(found.aproximada||found.productos.length!==1)return {texto:`El artículo «${it.busqueda}» no se identificó de forma única. Escribe el código y la cantidad de cada artículo para preparar un único pedido.`};items.push({producto_id:found.productos[0].id,cantidad:it.cantidad});}d.items=items;
   }
-  return {texto:'Preparé un borrador editable. Completa los campos faltantes, valida la propuesta y revisa su vista previa antes de confirmar. Todavía no se modificó el negocio.',borrador:construirBorrador(op.herramienta,d,cat,op.herramienta==='producto.crear'?'El producto se crea con stock cero. Registra después una entrada real mediante Inventario; la IA no inventa existencias.':undefined)};
+  const nota=op.herramienta==='producto.crear'
+   ? `El producto se crea con stock cero.${op.stock_inicial!==undefined?` Solicitaste ${op.stock_inicial} unidades iniciales.`:''} Después de confirmar el alta, registra${op.stock_inicial!==undefined?` una entrada de ${op.stock_inicial} unidades`:' una entrada real'} en Inventario con su motivo y confirmación. Esta propuesta solo crea el producto.`:undefined;
+  return {texto:'Preparé un borrador editable. Completa los campos faltantes, valida la propuesta y revisa su vista previa antes de confirmar. Todavía no se modificó el negocio.',borrador:construirBorrador(op.herramienta,d,cat,nota)};
  }
  if(p.intencion==='descripcion'||p.intencion==='clasificar'){
   if(elegidos.length!==1)return {texto:'Selecciona un producto para generar una propuesta basada en sus datos registrados. Para un alta nueva, usa el formulario Productos y su clasificación asistida.'};
