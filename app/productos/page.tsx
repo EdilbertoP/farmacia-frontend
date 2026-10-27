@@ -46,6 +46,12 @@ export default function Productos() {
   }
 
   useEffect(() => {
+    const actualizar = () => { void cargar(); };
+    window.addEventListener('farmacia:datos-actualizados',actualizar);
+    return () => window.removeEventListener('farmacia:datos-actualizados',actualizar);
+  }, []);
+
+  useEffect(() => {
     createClient().auth.getUser().then(({ data }) => {
       if (!data.user) router.replace("/login");
       else {
@@ -157,7 +163,7 @@ export default function Productos() {
             onChange={(e) => cambiar("descripcion", e.target.value)} />
         </label>
 
-        <ClasificacionIA key={form.id ?? "nuevo"} nombre={form.nombre} descripcion={form.descripcion}
+        <ClasificacionIA key={form.id ?? "nuevo"} nombre={form.nombre} descripcion={form.descripcion} onDescripcion={(texto)=>cambiar("descripcion",texto)}
           onConfirmar={(id) => { cambiar("categoria_id", id); setMensaje("Categoría confirmada en el formulario. Guarda el producto para aplicar el cambio."); }} />
 
         <label className="flex flex-col gap-1 text-sm">

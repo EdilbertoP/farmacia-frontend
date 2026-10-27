@@ -34,6 +34,12 @@ export default function Inventario() {
   }
 
   useEffect(() => {
+    const actualizar = () => { void cargar(); };
+    window.addEventListener('farmacia:datos-actualizados',actualizar);
+    return () => window.removeEventListener('farmacia:datos-actualizados',actualizar);
+  }, []);
+
+  useEffect(() => {
     const supabase = createClient();
     supabase.auth.getUser().then(async ({ data }) => {
       if (!data.user) { router.replace("/login"); return; }

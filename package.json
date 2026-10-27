@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "node --test tests/ia.test.cjs tests/chat.test.cjs tests/agente.test.cjs tests/sql.test.cjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.7",
@@ -16,6 +17,7 @@
     "react-dom": "19.3.0"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.12",
     "@tailwindcss/turbopack": "^4",
     "@types/node": "^20",
     "@types/react": "^19",

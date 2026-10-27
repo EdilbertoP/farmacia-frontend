@@ -50,6 +50,12 @@ export default function Reportes() {
   }
 
   useEffect(() => {
+    const actualizar = () => { void cargar(rol === 'admin'); };
+    window.addEventListener('farmacia:datos-actualizados',actualizar);
+    return () => window.removeEventListener('farmacia:datos-actualizados',actualizar);
+  }, [rol]);
+
+  useEffect(() => {
     const supabase = createClient();
     supabase.auth.getUser().then(async ({ data }) => {
       if (!data.user) { router.replace("/login"); return; }

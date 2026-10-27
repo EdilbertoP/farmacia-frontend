@@ -1,3 +1,5 @@
+> **Versión actual: V3.** La guía vigente es [AGENTE_V3_INSTALACION.md](AGENTE_V3_INSTALACION.md). Las restricciones antiguas de chatbot de solo lectura y períodos limitados se ampliaron en V3. Este documento se conserva como referencia de las funciones originales.
+
 # Asistente IA de Farmacia La Salud
 
 ## Activación de esta versión

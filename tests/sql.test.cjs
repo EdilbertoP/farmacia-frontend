@@ -1,0 +1,53 @@
+const fs=require('fs'),assert=require('assert/strict');
+const {PGlite}=require('@electric-sql/pglite');
+const base=`create schema auth;create role anon;create role authenticated;
+create table auth.users(id uuid primary key);insert into auth.users values('11111111-1111-4111-8111-111111111111'),('22222222-2222-4222-8222-222222222222');
+create function auth.uid() returns uuid language sql as $$select nullif(current_setting('app.uid',true),'')::uuid$$;
+create function public.rol_actual() returns text language sql as $$select current_setting('app.rol',true)$$;
+create table categorias(id serial primary key,nombre text not null unique);
+create table productos(id serial primary key,codigo text not null unique,nombre text not null,descripcion text,categoria_id integer references categorias,precio numeric not null,stock integer not null default0,stock_minimo integer not null default0,requiere_receta boolean not null default false,activo boolean not null default true);
+create table pedidos(id serial primary key,total numeric,estado text default 'registrado',creado_en timestamptz default now());
+create table pedido_detalle(id serial primary key,pedido_id integer references pedidos,producto_id integer references productos,cantidad integer,precio_unitario numeric,subtotal numeric);
+create table movimientos_inventario(id serial primary key,producto_id integer references productos,cantidad integer,tipo text,motivo text);
+create function app_registrar_movimiento(p_producto_id integer,p_tipo text,p_cantidad integer,p_motivo text) returns integer language plpgsql as $$declare s integer;begin update productos set stock=case when p_tipo='entrada' then stock+p_cantidad else p_cantidad end where id=p_producto_id returning stock into s;insert into movimientos_inventario(producto_id,cantidad,tipo,motivo)values(p_producto_id,p_cantidad,p_tipo,p_motivo);return s;end$$;
+create function app_registrar_pedido(p_cliente_nombre text,p_items jsonb) returns integer language plpgsql as $$declare it jsonb;v integer;t numeric:=0;p productos%rowtype;begin insert into pedidos(total)values(0)returning id into v;for it in select value from jsonb_array_elements(p_items) loop select * into p from productos where id=(it->>'producto_id')::int for update;if p.stock<(it->>'cantidad')::int then raise exception 'stock';end if;update productos set stock=stock-(it->>'cantidad')::int where id=p.id;insert into pedido_detalle(pedido_id,producto_id,cantidad,precio_unitario,subtotal)values(v,p.id,(it->>'cantidad')::int,p.precio,p.precio*(it->>'cantidad')::int);t:=t+p.precio*(it->>'cantidad')::int;end loop;update pedidos set total=t where id=v;return v;end$$;
+create function app_anular_pedido(p_pedido_id integer,p_motivo text)returns void language plpgsql as $$begin update pedidos set estado='anulado' where id=p_pedido_id;end$$;
+insert into categorias(nombre)values('Primeros auxilios'),('Cuidado personal');insert into productos(codigo,nombre,categoria_id,precio,stock,stock_minimo)values('ALC-01','Alcohol',1,15,20,5);
+select set_config('app.uid','11111111-1111-4111-8111-111111111111',false);select set_config('app.rol','admin',false);`;
+const {test}=require('node:test');
+test('PostgreSQL: transacciones, idempotencia, concurrencia optimista y roles',async()=>{const db=new PGlite({onNotice:n=>console.log("SQL NOTICE:",n.message)});try{
+ await db.exec(base.replaceAll('default0','default 0'));
+ await db.exec(fs.readFileSync('supabase/IA_GEMINI.sql','utf8'));
+ await db.exec(fs.readFileSync('supabase/IA_AGENTE_V3.sql','utf8'));
+ await db.exec(fs.readFileSync('supabase/IA_AGENTE_V3.sql','utf8')); // Migración idempotente; no borra registros.
+ const rpc=async(fn,args)=>{const params=args.map((_,i)=>'$'+(i+1)).join(',');return (await db.query(`select public.${fn}(${params}) as r`,args)).rows[0].r};
+ let p=await rpc('ia_preparar_propuesta',['producto.actualizar',{id:1,precio:22},'33333333-3333-4333-8333-333333333333']);
+ assert.equal(p.estado,'pendiente');assert.equal((await db.query('select precio from productos where id=1')).rows[0].precio,'15');
+ p=await rpc('ia_confirmar_propuesta',[p.id,p.revision,true]);assert.equal(p.estado,'ejecutada');assert.equal((await db.query('select precio from productos where id=1')).rows[0].precio,'22');
+ const repeat=await rpc('ia_confirmar_propuesta',[p.id,p.revision,true]);assert.equal(repeat.id,p.id);
+ let q=await rpc('ia_preparar_propuesta',['pedido.crear',{items:[{producto_id:1,cantidad:3,precio_unitario:1}]},'44444444-4444-4444-8444-444444444444']);assert.equal(q.datos.items[0].precio_unitario,22);
+ q=await rpc('ia_confirmar_propuesta',[q.id,q.revision,true]);assert.equal(q.estado,'ejecutada');await rpc('ia_confirmar_propuesta',[q.id,q.revision,true]);assert.equal((await db.query('select count(*) n from pedidos')).rows[0].n,1);assert.equal((await db.query('select stock from productos where id=1')).rows[0].stock,17);
+ let conflict=await rpc('ia_preparar_propuesta',['inventario.ajuste',{producto_id:1,cantidad:10,motivo:'Conteo físico'},'55555555-5555-4555-8555-555555555555']);await db.exec('update productos set stock=16 where id=1');conflict=await rpc('ia_confirmar_propuesta',[conflict.id,conflict.revision,true]);assert.equal(conflict.estado,'fallida');assert.equal(conflict.resultado.codigo,'CONFLICTO_ACTUALIZACION');assert.equal((await db.query('select stock from productos where id=1')).rows[0].stock,16);
+ let cat=await rpc('ia_preparar_propuesta',['categoria.crear',{nombre:'Nueva'},'66666666-6666-4666-8666-666666666666']);cat=await rpc('ia_confirmar_propuesta',[cat.id,cat.revision,true]);assert.equal(cat.estado,'ejecutada');
+ // Create, revise exact version, delete logically and dependent category rejection.
+ let nuevo=await rpc('ia_preparar_propuesta',['producto.crear',{codigo:'JAB-02',nombre:'Jabón',categoria_id:2,precio:10,stock_minimo:2,requiere_receta:false},'88888888-8888-4888-8888-888888888888']);
+ nuevo=await rpc('ia_confirmar_propuesta',[nuevo.id,nuevo.revision,true]);assert.equal(nuevo.estado,'ejecutada');const nid=nuevo.resultado.registro.id;assert.equal(nuevo.resultado.registro.stock,0);
+ let entrada=await rpc('ia_preparar_propuesta',['inventario.entrada',{producto_id:nid,cantidad:6,motivo:'Compra recibida'},'99999999-9999-4999-8999-999999999999']);
+ entrada=await rpc('ia_confirmar_propuesta',[entrada.id,entrada.revision,true]);assert.equal(entrada.estado,'ejecutada');assert.equal((await db.query('select stock from productos where id=$1',[nid])).rows[0].stock,6);
+ let des=await rpc('ia_preparar_propuesta',['producto.desactivar',{id:nid},'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa']);des=await rpc('ia_confirmar_propuesta',[des.id,des.revision,true]);assert.equal(des.resultado.registro.activo,false);assert.equal((await db.query('select count(*) n from productos where id=$1',[nid])).rows[0].n,1);
+ await assert.rejects(rpc('ia_preparar_propuesta',['categoria.eliminar',{id:1},'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb']));
+ let ed=await rpc('ia_preparar_propuesta',['producto.actualizar',{id:1,descripcion:'Frasco registrado'},'cccccccc-cccc-4ccc-8ccc-cccccccccccc']);const oldVersion=ed.revision;
+ ed=await rpc('ia_revisar_propuesta',[ed.id,ed.revision,{id:1,descripcion:'Frasco de alcohol registrado'}]);assert.equal(ed.revision,oldVersion+1);await assert.rejects(rpc('ia_confirmar_propuesta',[ed.id,oldVersion,true]));ed=await rpc('ia_confirmar_propuesta',[ed.id,ed.revision,true]);assert.equal(ed.estado,'ejecutada');assert.ok((await db.query("select count(*) n from ia_eventos where evento='descripcion_actualizada'")).rows[0].n>0);
+ let delcat=await rpc('ia_preparar_propuesta',['categoria.eliminar',{id:3},'dddddddd-dddd-4ddd-8ddd-dddddddddddd']);delcat=await rpc('ia_confirmar_propuesta',[delcat.id,delcat.revision,true]);assert.equal(delcat.estado,'ejecutada');
+ // Un fallo de un procedimiento compuesto revierte el negocio por completo.
+ await db.exec(`create or replace function app_registrar_pedido(p_cliente_nombre text,p_items jsonb) returns integer language plpgsql as $$begin update productos set stock=0 where id=1;insert into pedidos(total)values(100);raise exception 'fallo simulado después de escribir';end$$;`);
+ const stockAntes=(await db.query('select stock from productos where id=1')).rows[0].stock;
+ let falla=await rpc('ia_preparar_propuesta',['pedido.crear',{items:[{producto_id:1,cantidad:1}]},'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee']);
+ falla=await rpc('ia_confirmar_propuesta',[falla.id,falla.revision,true]);assert.equal(falla.estado,'fallida');assert.equal((await db.query('select stock from productos where id=1')).rows[0].stock,stockAntes);assert.equal((await db.query('select count(*) n from pedidos')).rows[0].n,1);
+ await db.exec('set role authenticated');
+ await assert.rejects(db.query("select public.ia_validar_operacion('producto.actualizar','{}'::jsonb)"));
+ await db.exec('reset role');
+ await db.exec("select set_config('app.rol','vendedor',false)");await assert.rejects(rpc('ia_preparar_propuesta',['producto.actualizar',{id:1,precio:1},'77777777-7777-4777-8777-777777777777']));
+ await db.exec("select set_config('app.uid','22222222-2222-4222-8222-222222222222',false)");assert.equal(await rpc('ia_obtener_propuesta',[p.id]),null);
+ console.log('SQL V3 OK: instalación, vista previa, confirmación, precio oficial, idempotencia, conflicto, categoría y separación de usuarios/roles.');
+ }finally{await db.close()}});

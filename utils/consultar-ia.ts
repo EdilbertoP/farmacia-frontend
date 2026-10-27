@@ -1,7 +1,7 @@
 export class ConsultaIAError extends Error {
   constructor(message: string, public status: number, public codigo = "ERROR", public reintentarEn?: number) { super(message); }
 }
-export async function solicitarIA<T>(url: "/api/ia" | "/api/ia/chat", body: object, signal?: AbortSignal): Promise<T> {
+export async function solicitarIA<T>(url: "/api/ia" | "/api/ia/chat" | "/api/ia/propuestas", body: object, signal?: AbortSignal): Promise<T> {
   let response: Response;
   try {
     response = await fetch(url, {

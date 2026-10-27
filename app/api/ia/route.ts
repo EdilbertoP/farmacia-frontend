@@ -2,19 +2,34 @@ import { createClient } from "@/utils/supabase/server";
 import { IAError, baseDemanda, validarEntrada, validarClasificacion } from "@/lib/ia/domain";
 import { configuracionGemini, generarJSON } from "@/lib/ia/gemini";
 import { reservarConsulta } from "@/lib/ia/cuota";
+import {capacidades,exigir,evento} from "@/lib/ia/agente/propuestas";
+import type {SupabaseClient} from "@supabase/supabase-js";
 import { leerJSON, respuestaError } from "@/lib/ia/http";
 
 export const maxDuration = 60;
 
 export async function POST(request: Request) {
+  const inicio=Date.now();let dbEvento:SupabaseClient|undefined;
   const headers = { "Cache-Control": "no-store" };
   try {
     const entrada = validarEntrada(await leerJSON(request, 12000));
     const supabase = await createClient();
     const { data: { user }, error: authError } = await supabase.auth.getUser();
     if (authError || !user) throw new IAError("Inicia sesión para consultar la IA.", 401);
+    dbEvento=supabase;
+    const cap=await capacidades(supabase);exigir(cap,entrada.accion==='demanda'?'ventas.global':'catalogo.leer');
     configuracionGemini();
 
+    if(entrada.accion==='describir'){
+      await reservarConsulta(supabase);
+      const fuente=`${entrada.nombre}\n${entrada.descripcion}`;
+      const result=await generarJSON('Selecciona hasta tres fragmentos literales de la fuente para redactar una descripción conservadora. No inventes palabras, beneficios terapéuticos ni propiedades. Devuelve solo fragmentos que aparecen literalmente en la fuente.',{fuente},{type:'object',properties:{fragmentos:{type:'array',maxItems:3,items:{type:'string'}}},required:['fragmentos']});
+      const f=result.value.fragmentos;
+      if(!Array.isArray(f)||f.length>3||f.some(x=>typeof x!=='string'||!x.trim()||x.length>500||!fuente.includes(x)))throw new IAError('Se descartó la descripción porque contenía información no respaldada.',502,'RESPUESTA_INVALIDA');
+      const descripcion=[entrada.nombre,...f.filter(x=>x!==entrada.nombre)].join('. ').slice(0,2000);
+      await evento(supabase,'solicitud_completada','describir','OK',Date.now()-inicio,result.consumo);
+      return Response.json({descripcion,modelo:result.modelo},{headers});
+    }
     if (entrada.accion === "clasificar") {
       const { data: categorias, error } = await supabase.from("categorias").select("id,nombre").order("id").limit(201);
       if (error) throw new IAError("No se pudieron leer las categorías de Supabase. Revisa los permisos.", 502);
@@ -26,7 +41,9 @@ export async function POST(request: Request) {
         { nombre: entrada.nombre, descripcion: entrada.descripcion, categorias },
         { type: "object", properties: { categoria_id: { type: "integer" }, motivo: { type: "string" } }, required: ["categoria_id", "motivo"] },
       );
-      return Response.json({ ...validarClasificacion(result.value, categorias), modelo: result.modelo }, { headers });
+      const validada=validarClasificacion(result.value,categorias);
+      await evento(supabase,'solicitud_completada','clasificar','OK',Date.now()-inicio,result.consumo);
+      return Response.json({...validada,modelo:result.modelo},{headers});
     }
 
     const { data, error } = await supabase.from("v_resumen_demanda")
@@ -44,6 +61,7 @@ export async function POST(request: Request) {
     if (typeof result.value?.texto !== "string" || !result.value.texto.trim() || result.value.texto.length > 6000) {
       throw new IAError("Gemini devolvió un informe inválido.", 502);
     }
+    await evento(supabase,'solicitud_completada','demanda','OK',Date.now()-inicio,result.consumo);
     return Response.json({ texto: result.value.texto, datos, modelo: result.modelo, generado_en: new Date().toISOString() }, { headers });
-  } catch (error) { return respuestaError(error); }
+  } catch (error) {if(dbEvento)await evento(dbEvento,'solicitud_fallida','ia',error instanceof IAError?error.codigo:'INTERNO',Date.now()-inicio);return respuestaError(error); }
 }

@@ -10,14 +10,14 @@ export function numeroReal(v: unknown) {
   }
   return Number(v);
 }
-export async function cargarProductos(supabase: SupabaseClient): Promise<ProductoChat[]> {
+export async function cargarProductos(supabase: SupabaseClient, incluirInactivos = false): Promise<ProductoChat[]> {
   const productos: ProductoChat[] = [];
   // Supabase may cap each response at 1000. Page at 200, with an exact count.
   let total = 0;
   for (let offset = 0; offset <= 5000; offset += 200) {
-    const { data, count, error } = await supabase.from("productos")
-      .select("id,codigo,nombre,stock,stock_minimo,precio", { count: "exact" })
-      .eq("activo", true).order("id").range(offset, offset + 199);
+    let query=supabase.from("productos").select("id,codigo,nombre,descripcion,categoria_id,stock,stock_minimo,precio,activo", {count:"exact"});
+    if(!incluirInactivos)query=query.eq("activo",true);
+    const {data,count,error}=await query.order("id").range(offset,offset+199);
     if (error) throw new IAError("No pude consultar los productos. Revisa la sesión y los permisos de Supabase.", 502, "DATOS_SUPABASE");
     if (count === null) throw new IAError("No pude verificar si el catálogo está completo. Intenta de nuevo.", 502, "DATOS_SUPABASE");
     total = count;
@@ -25,7 +25,7 @@ export async function cargarProductos(supabase: SupabaseClient): Promise<Product
     for (const p of data ?? []) {
       if (typeof p.nombre !== "string" || !p.nombre.trim() || p.nombre.length > 500 || typeof p.codigo !== "string") throw new IAError("Hay productos con nombre o código inválido.", 422, "DATOS_INVALIDOS");
       productos.push({ id: numeroReal(p.id), codigo: p.codigo, nombre: p.nombre,
-        stock: numeroReal(p.stock), stock_minimo: numeroReal(p.stock_minimo), precio: numeroReal(p.precio) });
+        categoria_id:p.categoria_id===undefined?undefined:numeroReal(p.categoria_id),descripcion:p.descripcion,activo:p.activo,stock: numeroReal(p.stock), stock_minimo: numeroReal(p.stock_minimo), precio: numeroReal(p.precio) });
     }
     if (productos.length >= total) break;
     if (!data?.length) throw new IAError("El catálogo cambió o se recibió incompleto. Repite la consulta.", 409, "DATOS_INCOMPLETOS");
@@ -46,12 +46,13 @@ export async function consultarDemanda(supabase: SupabaseClient, ids: number[], 
 
 export async function consultarVentas(supabase: SupabaseClient, periodo: Periodo) {
   const rango = rangoPeriodo(periodo);
+  const serie: {producto_id:number;fecha:string;cantidad:number;pedido_id:number;ingresos:number}[]=[];
   const ventas = new Map<number, { unidades: number; ingresos: number }>();
   let pedidos = 0, ingresos = 0, unidades = 0;
   const seen = new Set<number>();
   for (let offset = 0; offset <= 5000; offset += 200) {
     const { data, count, error } = await supabase.from("pedidos")
-      .select("id,total,pedido_detalle(producto_id,cantidad,subtotal,precio_unitario)", { count: "exact" })
+      .select("id,total,creado_en,pedido_detalle(producto_id,cantidad,subtotal,precio_unitario)", { count: "exact" })
       .neq("estado", "anulado").gte("creado_en", rango.desde).lt("creado_en", rango.hasta)
       .order("id").range(offset, offset + 199);
     if (error || count === null) throw new IAError("No pude consultar ventas y detalles de pedidos. Revisa los permisos de tu sesión en Supabase.", 502, "DATOS_SUPABASE");
@@ -67,6 +68,7 @@ export async function consultarVentas(supabase: SupabaseClient, periodo: Periodo
         totalPedido += subtotal;
         const old = ventas.get(id) ?? { unidades: 0, ingresos: 0 };
         ventas.set(id, { unidades: old.unidades + cantidad, ingresos: old.ingresos + subtotal });
+        if(typeof pedido.creado_en==="string")serie.push({producto_id:id,fecha:pedido.creado_en,cantidad,pedido_id:Number(pedido.id),ingresos:subtotal});
         unidades += cantidad; ingresos += subtotal;
       }
       if (Math.abs(totalPedido - numeroReal(pedido.total)) > 0.02) throw new IAError("El detalle de un pedido no coincide con su total o se recibió incompleto. Revisa los datos antes del análisis.", 422, "DATOS_INCOMPLETOS");
@@ -74,5 +76,5 @@ export async function consultarVentas(supabase: SupabaseClient, periodo: Periodo
     if (pedidos >= count) break;
     if (!data?.length) throw new IAError("Los pedidos se recibieron incompletos. Repite la consulta.", 409, "DATOS_INCOMPLETOS");
   }
-  return { rango, ventas, pedidos, ingresos, unidades };
+  return { rango, ventas, pedidos, ingresos, unidades, serie };
 }

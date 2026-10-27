@@ -4,16 +4,25 @@ import { usePathname } from "next/navigation";
 import { createClient } from "@/utils/supabase/client";
 import { ConsultaIAError, solicitarIA } from "@/utils/consultar-ia";
 import type { FilaChat, RespuestaChat } from "@/lib/ia/chat-types";
+import PropuestaCard from "./agente/PropuestaCard";
+import Resultados from "./agente/Resultados";
+import Historial from "./agente/Historial";
 import { estilosAsistente as styles } from "./asistente-estilos";
 
 type Mensaje = { id: string; rol: "usuario" | "asistente"; texto: string; resultado?: RespuestaChat; fecha?: string; error?: boolean };
 type Seleccion = { id: number; nombre: string };
-type Estado = { modelo: string; comprobada: boolean; mensaje: string; aviso?: string; uso?: { intentos: number; limite: number; restantes: number; espera_segundos: number } | null };
-const RAPIDAS = [
+type Estado = { capacidades?: {herramientas:string[]}; modelo: string; comprobada: boolean; mensaje: string; aviso?: string; uso?: { intentos: number; limite: number; restantes: number; espera_segundos: number } | null };
+const RAPIDAS: {titulo:string;pregunta:string;permiso?:string}[] = [
   { titulo: "Consultar existencias", pregunta: "¿Cuántas unidades hay de este producto?" },
   { titulo: "Stock bajo", pregunta: "¿Qué productos están en el mínimo o por debajo?" },
-  { titulo: "Más vendidos", pregunta: "Muéstrame los 5 productos más vendidos de los últimos 30 días" },
-  { titulo: "Resumen del negocio", pregunta: "Dame un resumen del inventario actual y las ventas de este mes" },
+  { titulo: "Más vendidos", permiso:"ventas.global", pregunta: "Muéstrame los 5 productos más vendidos de los últimos 30 días" },
+  { titulo: "Resumen del negocio", permiso:"ventas.global", pregunta: "Dame un resumen del inventario actual y las ventas de este mes" },
+  {titulo:"Preparar pedido",permiso:"pedido.crear",pregunta:"Quiero preparar un pedido. ¿Qué datos necesitas?"},
+  {titulo:"Crear producto",permiso:"producto.crear",pregunta:"Prepara el alta de un nuevo producto; completaré los campos en el formulario"},
+  {titulo:"Consultar pedidos",permiso:"pedido.leer",pregunta:"Muéstrame los pedidos de esta semana"},
+  {titulo:"Proponer reposición",permiso:"ventas.global",pregunta:"Prepara una propuesta de reposición para revisar"},
+  {titulo:"Informe de ventas",permiso:"ventas.global",pregunta:"Genera un informe de las ventas de este mes para revisar y guardar"},
+  {titulo:"Clasificar producto",pregunta:"Clasifica este producto dentro de las categorías registradas"},
 ];
 function Spark({ small = false }: { small?: boolean }) {
   return <svg aria-hidden="true" width={small ? 18 : 23} height={small ? 18 : 23} viewBox="0 0 24 24" fill="none"><path d="m12 3 2.8 6.2L21 12l-6.2 2.8L12 21l-2.8-6.2L3 12l6.2-2.8L12 3Z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" /><path d="m20 2 .6 1.4L22 4l-1.4.6L20 6l-.6-1.4L18 4l1.4-.6L20 2Z" fill="currentColor" /></svg>;
@@ -23,7 +32,7 @@ function inicial(uid: string) {
     const s = JSON.parse(sessionStorage.getItem(`farmacia-chat:${uid}`) || "null");
     const mensajes: Mensaje[] = Array.isArray(s?.mensajes) ? s.mensajes.filter((m: Mensaje) => ["usuario", "asistente"].includes(m.rol) && typeof m.texto === "string" && m.texto.length <= 12000 && typeof m.id === "string")
       .slice(-30).map((m: Mensaje) => ({ id: m.id, rol: m.rol, texto: m.texto, fecha: typeof m.fecha === "string" ? m.fecha : undefined })) : [];
-    return { mensajes, contexto: typeof s?.contexto === "string" && s.contexto.length <= 6000 ? s.contexto : undefined,
+    return { mensajes, contexto: typeof s?.contexto === "string" && s.contexto.length <= 24000 ? s.contexto : undefined,
       seleccion: Number.isSafeInteger(s?.seleccion?.id) && s.seleccion.id > 0 && typeof s.seleccion.nombre === "string" ? s.seleccion as Seleccion : null };
   } catch { return { mensajes: [] as Mensaje[], contexto: undefined, seleccion: null }; }
 }
@@ -33,6 +42,8 @@ function TablaDatos({ filas }: { filas: FilaChat[] }) {
     { key: "stock", label: "Disponibles" }, { key: "minimo", label: "Mínimo" },
     { key: "precio", label: "Precio", format: (v) => v === null ? "—" : `Q${v.toFixed(2)}` },
     { key: "unidades", label: "Vendidas" }, { key: "estimacion", label: "Estimadas", format: (v) => v === null ? "Datos insuficientes" : String(v) },
+    {key:"anterior",label:"Anterior"},{key:"actual",label:"Actual"},{key:"variacion",label:"Variación %",format:v=>v===null?'Base cero':String(v)},
+    {key:"reposicion",label:"Reposición sugerida"},{key:"mae",label:"MAE semanal",format:v=>v===null?'Sin evaluación':String(v)},
     { key: "diasStock", label: "Días de stock", format: (v) => v === null ? "Datos insuficientes" : String(v) },
   ];
   const visibles = cols.filter((c) => c.key === "producto" || filas.some((r) => r[c.key] !== undefined));
@@ -59,6 +70,7 @@ function ChatPanel({ uid }: { uid: string }) {
   const fin = useRef<HTMLDivElement>(null), controller = useRef<AbortController | null>(null);
   const enviando = useRef(false), secuencia = useRef(0);
   const pathname = usePathname();
+  const rapidas=RAPIDAS.filter(q=>!q.permiso||estado?.capacidades?.herramientas.includes(q.permiso));
   const noDisponible = ocupado || verificando || espera > 0;
 
   useEffect(() => {
@@ -131,7 +143,7 @@ function ChatPanel({ uid }: { uid: string }) {
         setSeleccion(null);
       }
       setMensajes((m) => [...m, { id: crypto.randomUUID(), rol: "asistente", texto: r.texto, resultado: r, fecha: r.consultado_en }]);
-      if (r.modelo) setEstado((s) => ({ modelo: r.modelo!, comprobada: true, mensaje: "Gemini respondió correctamente.", uso: s?.uso }));
+      if (r.modelo) setEstado((s) => ({ modelo: r.modelo!, comprobada: true, mensaje: "Gemini respondió correctamente.", uso: s?.uso, capacidades:s?.capacidades }));
     } catch (e) {
       if (seq !== secuencia.current || abort.signal.aborted) return;
       const textoError = e instanceof Error ? e.message : "No pude completar la consulta.";
@@ -147,7 +159,7 @@ function ChatPanel({ uid }: { uid: string }) {
     enviando.current = true; setVerificando(true); setErrorEstado("");
     try {
       const r = await solicitarIA<Estado>("/api/ia/chat", { accion: "comprobar" });
-      setEstado((s) => ({ ...r, uso: s?.uso })); setEspera(10);
+      setEstado((s) => ({ ...r, uso: s?.uso, capacidades:s?.capacidades })); setEspera(10);
     } catch (e) {
       setErrorEstado(e instanceof Error ? e.message : "No se pudo comprobar la conexión.");
       if (e instanceof ConsultaIAError && e.reintentarEn) setEspera(e.reintentarEn);
@@ -178,8 +190,9 @@ function ChatPanel({ uid }: { uid: string }) {
           <article className={styles.welcome}>
             <div className={styles.eyebrow}><Spark small /> DATOS DE TU FARMACIA</div>
             <h3>¿Qué necesitas consultar?</h3>
-            <p>Pregunta con tus palabras. Consulto los datos disponibles y te pido aclaración si hay varias coincidencias.</p>
-            <div className={styles.quickGrid}>{RAPIDAS.map((q) => <button key={q.titulo} type="button" disabled={noDisponible} onClick={() => void enviar(q.pregunta)}>{q.titulo}<span aria-hidden="true">↗</span></button>)}</div>
+            <p>Pregunta con tus palabras. Consulto datos, preparo propuestas y te pido confirmación antes de aplicar cambios.</p>
+            <div className={styles.quickGrid}>{rapidas.slice(0,4).map((q) => <button key={q.titulo} type="button" disabled={noDisponible} onClick={() => void enviar(q.pregunta)}>{q.titulo}<span aria-hidden="true">↗</span></button>)}</div>
+            {rapidas.length>4&&<details><summary>Más acciones del agente</summary><div className={styles.quickGrid}>{rapidas.slice(4).map(q=><button type="button" key={q.titulo} disabled={noDisponible} onClick={()=>void enviar(q.pregunta)}>{q.titulo}<span aria-hidden="true">↗</span></button>)}</div></details>}
             <p className={styles.example}>Por ejemplo: “¿cuántos jabones quedan?” o “ventas de ayer”.</p>
           </article>
           {mensajes.map((m) => <article key={m.id} className={`${styles.message} ${m.rol === "usuario" ? styles.user : styles.assistant} ${m.error ? styles.error : ""}`}>
@@ -188,6 +201,10 @@ function ChatPanel({ uid }: { uid: string }) {
             {m.rol === "asistente" && !m.resultado?.fuente && m.fecha && <span className={styles.transcriptTime}>Respuesta del {new Date(m.fecha).toLocaleString("es-GT", { timeZone: "America/Guatemala" })}</span>}
             {m.resultado?.filas && m.resultado.filas.length > 0 && <TablaDatos filas={m.resultado.filas} />}
             {m.resultado?.opciones && m.resultado.opciones.length > 0 && <div className={styles.choices}>{m.resultado.opciones.map((o) => <button key={o.id} type="button" disabled={ocupado || verificando || m !== mensajes[mensajes.length - 1]} onClick={() => void enviar(`Selecciono ${o.nombre} (${o.codigo})`, o.id)}><strong>{o.nombre}</strong><span>{o.codigo} · Elegir producto</span></button>)}</div>}
+            {m.resultado?.etiquetas&&<div className="iaV3-etiquetas">{m.resultado.etiquetas.map(e=><span key={e.tipo}>{e.tipo}: {e.texto}</span>)}</div>}
+            {m.resultado?.resultado_estructurado&&<details><summary>Ver datos y método</summary><Resultados datos={m.resultado.resultado_estructurado}/></details>}
+            {m.resultado?.interpretacion_ia&&<div className="iaV3-interpretacion"><strong>Interpretación de IA · Revisar</strong><p>{m.resultado.interpretacion_ia}</p></div>}
+            {m.resultado?.borrador&&<PropuestaCard borrador={m.resultado.borrador} onEstado={(p)=>setMensajes(prev=>[...prev,{id:crypto.randomUUID(),rol:"asistente",texto:`Estado verificado por PostgreSQL: propuesta ${p.id.slice(0,8)}, versión ${p.revision}, ${p.estado}. ${p.estado==='ejecutada'?'La operación se ejecutó; no la repitas.':p.estado==='rechazada'?'No se aplicó la operación.':'No se aplicó el cambio; revisa el motivo en la propuesta.'} Puedes consultar el registro completo en Historial del agente.`,fecha:new Date().toISOString()}])} puedeExportar={estado?.capacidades?.herramientas.includes("informe.exportar")}/>}
             {m.resultado?.nota && <p className={styles.note}>{m.resultado.nota}</p>}
             {m.resultado?.fuente && <div className={styles.source}><span>{m.resultado.fuente}</span>{m.resultado.periodo && <span>{m.resultado.periodo}</span>}<span>Consulta: {new Date(m.resultado.consultado_en).toLocaleString("es-GT", { timeZone: "America/Guatemala" })}</span></div>}
           </article>)}
@@ -208,6 +225,7 @@ function ChatPanel({ uid }: { uid: string }) {
             <button type="submit" disabled={noDisponible || !pregunta.trim()} aria-label="Enviar pregunta"><svg aria-hidden="true" width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="m3 3 18 9-18 9 4-9-4-9Zm4 9h14" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" /></svg></button>
           </form>
           <div className={styles.composerMeta}><span>{espera > 0 ? `Próxima consulta en ${espera}s` : "Enter para enviar · Shift+Enter para otra línea"}</span><span>{pregunta.length}/1000</span></div>
+          <Historial admin={estado?.capacidades?.herramientas.includes("auditoria.leer")} puedeExportar={estado?.capacidades?.herramientas.includes("informe.exportar")}/>
           <details className={styles.connection}>
             <summary>Conexión y uso de IA{estado?.uso ? ` · ${estado.uso.restantes}/${estado.uso.limite} disponibles hoy` : ""}</summary>
             <p>Modelo: <strong>{estado?.modelo || "gemini-3.5-flash-lite"}</strong></p>
@@ -217,7 +235,7 @@ function ChatPanel({ uid }: { uid: string }) {
             <button type="button" disabled={noDisponible} onClick={comprobar}>{verificando ? "Comprobando…" : "Comprobar conexión"}</button>
             <p>La prueba consume una consulta. Límite local: 30 al día y 10 segundos entre consultas. La cuota de Google se aplica además.</p>
           </details>
-          <p className={styles.disclaimer}>Consulta datos; las operaciones se confirman en sus pantallas. Revisa las estimaciones antes de decidir.</p>
+          <p className={styles.disclaimer}>Las propuestas requieren validación y confirmación. Revisa las cifras y las estimaciones antes de aprobar.</p>
         </div>
       </section>
     </>}

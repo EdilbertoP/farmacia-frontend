@@ -15,12 +15,12 @@ export type ResultadoDemanda = {
 export function validarEntrada(value: unknown) {
   if (!value || typeof value !== "object") throw new IAError("Solicitud inválida.");
   const b = value as Record<string, unknown>;
-  if (b.accion === "clasificar") {
+  if (b.accion === "clasificar" || b.accion === "describir") {
     if (typeof b.nombre !== "string" || !b.nombre.trim() || b.nombre.length > 200 ||
         typeof b.descripcion !== "string" || b.descripcion.length > 2000) {
       throw new IAError("Escribe un nombre (máximo 200 caracteres) y una descripción de hasta 2000 caracteres.");
     }
-    return { accion: "clasificar" as const, nombre: b.nombre.trim(), descripcion: b.descripcion.trim() };
+    return b.accion==="clasificar"?{accion:"clasificar" as const,nombre:b.nombre.trim(),descripcion:b.descripcion.trim()}:{accion:"describir" as const,nombre:b.nombre.trim(),descripcion:b.descripcion.trim()};
   }
   if (b.accion === "demanda" && typeof b.producto_id === "number" && Number.isSafeInteger(b.producto_id) &&
       b.producto_id > 0 && typeof b.dias === "number" && [7, 14, 30].includes(b.dias)) {
@@ -54,4 +54,8 @@ export function validarClasificacion(value: unknown, categorias: Categoria[]) {
     throw new IAError("Gemini no devolvió una categoría válida del catálogo. Revisa la categoría manualmente.", 502);
   }
   return { categoria_id: categoria.id, categoria: categoria.nombre, motivo: r.motivo };
+}
+
+export function contieneCredencial(texto:string,clave?:string){
+ return Boolean(clave&&texto.includes(clave))||/\bAIza[A-Za-z0-9_-]{20,}\b|\bsk-[A-Za-z0-9_-]{16,}|\bsb_(secret|publishable)_[A-Za-z0-9_-]{16,}|\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b|Bearer\s+[A-Za-z0-9._-]{16,}/i.test(texto);
 }

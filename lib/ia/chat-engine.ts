@@ -6,10 +6,13 @@ import { reservarConsulta } from "./cuota";
 import { ESQUEMA_PETICION, INSTRUCCION_CHAT, validarPeticion, buscarProductos, normalizar } from "./chat-domain";
 import { leerContexto, firmarContexto, type ContextoChat } from "./chat-context";
 import { cargarProductos, consultarDemanda, consultarVentas } from "./chat-data";
+import {ejecutarAvanzada,catalogos,filtrar} from "./agente/herramientas";
+import {exigir} from "./agente/propuestas";
+import type {Capacidades} from "./agente/types";
 import type { HistorialChat, Peticion, ProductoChat, RespuestaChat, FilaChat } from "./chat-types";
 
 export type EntradaChat = { mensaje: string; contexto?: string; producto_id?: number; eleccion_id?: number; historial: HistorialChat[] };
-const AYUDA = "Puedo consultar existencias y precios, productos bajo mínimo o agotados, ventas, más vendidos y demanda estimada. Escribe el nombre o código; puedes preguntar por varios productos. Para ventas puedes usar hoy, ayer, este mes o los últimos 7, 30 o 90 días. Si dices «este producto», selecciona uno en Productos o indícalo en el chat.";
+const AYUDA = "Puedo preparar altas y cambios con confirmación, pedidos, entradas y ajustes; clasificar y describir artículos, comparar períodos y proponer reposición. Las herramientas dependen de tus permisos. También puedo consultar existencias y precios, productos bajo mínimo o agotados, ventas, más vendidos y demanda estimada. Escribe el nombre o código; puedes preguntar por varios productos. Para ventas puedes usar hoy, ayer, este mes o los últimos 7, 30 o 90 días. Si dices «este producto», selecciona uno en Productos o indícalo en el chat.";
 const numero = (v: number) => new Intl.NumberFormat("es-GT", { maximumFractionDigits: 2 }).format(v);
 const moneda = (v: number) => `Q${v.toFixed(2)}`;
 const filaProducto = (p: ProductoChat): FilaChat => ({ id: p.id, producto: p.nombre, codigo: p.codigo, stock: p.stock, minimo: p.stock_minimo, precio: p.precio });
@@ -17,15 +20,12 @@ const unico = (ids: number[]) => [...new Set(ids)];
 
 export function bloqueoLocal(mensaje: string) {
   const s = normalizar(mensaje);
-  if (/\b(api key|apikey|clave secreta|clave de gemini|contrasena|system prompt|sql|ignora (las |tus )?instrucciones)\b/.test(s) ||
-    /\b(borra|borrar|elimina|eliminar|actualiza|actualizar|descuenta|descontar|registra|registrar|inserta|insertar)\b/.test(s) ||
-    /\b(crea|crear|haz|hacer|genera|generar) (un |una |el |la )?(pedido|compra|venta)\b/.test(s) ||
-    /\b(cambia|cambiar|modifica|modificar)\b/.test(s)) return "no_permitido" as const;
+  if (/\b(api key|apikey|clave secreta|clave de gemini|contrasena|system prompt|sql|ignora (las |tus )?instrucciones)\b/.test(s)) return "no_permitido" as const;
   if (/\b(dosis|dosificacion|diagnostico|tratamiento|que (tomo|tomar)|puedo tomar|me recomiendas (tomar|un medicamento))\b/.test(s)) return "fuera_alcance" as const;
   return null;
 }
 
-export async function resolverChat(supabase: SupabaseClient, uid: string, entrada: EntradaChat): Promise<RespuestaChat> {
+export async function resolverChat(supabase: SupabaseClient, uid: string, entrada: EntradaChat, cap?:Capacidades): Promise<RespuestaChat> {
   const consultado_en = new Date().toISOString();
   const ctx = leerContexto(entrada.contexto, uid);
   const responder = (r: Omit<RespuestaChat, "consultado_en">, c: Omit<ContextoChat, "exp"> = { uid, ids: ctx.ids, ultimaPeticion: ctx.ultimaPeticion }) =>
@@ -37,6 +37,7 @@ export async function resolverChat(supabase: SupabaseClient, uid: string, entrad
 
   let peticion: Peticion;
   let modelo: string | undefined;
+  let consumo:RespuestaChat["consumo"];
   let resueltos: number[] = [];
   let busquedas: string[] = [];
   if (entrada.eleccion_id !== undefined) {
@@ -47,14 +48,15 @@ export async function resolverChat(supabase: SupabaseClient, uid: string, entrad
   } else {
     await reservarConsulta(supabase);
     const interpretation = await generarJSON(INSTRUCCION_CHAT, {
-      pregunta_actual: entrada.mensaje,
+      pregunta_actual: entrada.mensaje, herramientas_permitidas:cap?.herramientas,
       contexto: { intencion_anterior: ctx.ultimaPeticion?.intencion, periodo_anterior: ctx.ultimaPeticion?.periodo,
         horizonte_anterior: ctx.ultimaPeticion?.horizonte_dias, productos_anteriores: ctx.ids.length,
         intencion_pendiente: ctx.pendiente?.peticion.intencion, hay_seleccion: Boolean(entrada.producto_id) },
       historial: entrada.historial,
     }, ESQUEMA_PETICION);
-    modelo = interpretation.modelo;
+    modelo = interpretation.modelo;consumo=interpretation.consumo;
     peticion = validarPeticion(interpretation.value);
+    if(cap&&peticion.intencion==='demanda'&&(peticion.proximo_mes||peticion.periodo==='ultimos_90_dias'||peticion.periodo_historico))peticion={...peticion,intencion:'pronostico'};
     busquedas = peticion.busquedas;
     if (peticion.continuar_aclaracion && ctx.pendiente) {
       // The original intent/period survives clarification; the new text only identifies a product.
@@ -64,16 +66,17 @@ export async function resolverChat(supabase: SupabaseClient, uid: string, entrad
     }
   }
   const terminar = (r: Omit<RespuestaChat, "consultado_en" | "intencion">, ids: number[] = resueltos) =>
-    responder({ ...r, intencion: peticion.intencion, modelo }, { uid, ids: unico(ids).slice(0, 20), ultimaPeticion: peticion });
+    responder({ ...r, intencion: peticion.intencion, modelo:r.modelo??modelo, consumo:consumo&&r.consumo?{entrada:consumo.entrada+r.consumo.entrada,salida:consumo.salida+r.consumo.salida,total:consumo.total+r.consumo.total}:r.consumo??consumo }, { uid, ids: unico(ids).slice(0, 20), ultimaPeticion: peticion });
   if (peticion.intencion === "ayuda") return terminar({ texto: AYUDA });
   if (peticion.intencion === "no_permitido") return terminar({ texto: "Puedo consultar los datos autorizados de inventario y ventas. Para guardar o modificar, utiliza Productos, Inventario o Pedidos. No puedo ejecutar SQL ni compartir secretos o información personal." });
   if (peticion.intencion === "fuera_alcance") return terminar({ texto: "Mi alcance es inventario y ventas de la farmacia. Puedo mostrar existencias, stock bajo, precios, ventas y estimaciones de demanda. Para consultas médicas, acude a un profesional de salud." });
   if (peticion.intencion === "aclarar") return terminar({ texto: "¿Puedes concretar qué quieres consultar y de qué producto? Puedo revisar existencias, precios, stock bajo y demanda a 7, 14 o 30 días. Para ventas admite hoy, ayer, este mes y los últimos 7, 30 o 90 días; no comparo períodos ni uso fechas personalizadas todavía." });
 
-  const productos = await cargarProductos(supabase);
+  if(cap){exigir(cap,'catalogo.leer');if(['ventas','resumen','mas_vendidos','demanda'].includes(peticion.intencion))exigir(cap,'ventas.global');}
+  const productos = await cargarProductos(supabase,peticion.intencion==='propuesta');
   const porId = new Map(productos.map((p) => [p.id, p]));
   if (resueltos.some((id) => !porId.has(id))) throw new IAError("Un producto elegido ya no está activo o accesible. Inicia una nueva pregunta para actualizar la selección.", 409, "PRODUCTO_NO_DISPONIBLE");
-  const necesitaProducto = ["existencias", "demanda"].includes(peticion.intencion);
+  const necesitaProducto = ["existencias", "demanda", "descripcion", "clasificar"].includes(peticion.intencion);
   const aclara = (texto: string, opciones: ProductoChat[], restantes: string[] = []) => responder({
     texto, intencion: peticion.intencion, modelo, opciones: opciones.slice(0, 8).map((p) => ({ id: p.id, nombre: p.nombre, codigo: p.codigo })),
     nota: opciones.length > 8 ? `Hay ${opciones.length} coincidencias. Muestro las primeras 8; escribe el código o una presentación más concreta si no aparece.` : undefined,
@@ -102,7 +105,10 @@ export async function resolverChat(supabase: SupabaseClient, uid: string, entrad
   }
   resueltos = unico(resueltos);
   if (necesitaProducto && !resueltos.length) return aclara("Indica el nombre o código del producto que quieres consultar.", []);
-  const elegidos = resueltos.map((id) => porId.get(id)!).filter(Boolean);
+  let elegidos = resueltos.map((id) => porId.get(id)!).filter(Boolean);
+  const avanzada=await ejecutarAvanzada(supabase,peticion,productos,elegidos,cap,entrada.mensaje);
+  if(avanzada)return terminar(avanzada);
+  if(peticion.categoria||peticion.stock_filtro||peticion.orden){const cats=await catalogos(supabase,productos);elegidos=filtrar(elegidos.length?elegidos:productos,peticion,cats.categorias);}
   const interpretacion = `${peticion.intencion.replaceAll("_", " ")}${elegidos.length ? ` · ${elegidos.map((p) => p.nombre).join(", ")}` : ""}`;
   const fuente = "Productos activos accesibles en Supabase";
 
@@ -111,7 +117,7 @@ export async function resolverChat(supabase: SupabaseClient, uid: string, entrad
     return terminar({ texto, filas: elegidos.map(filaProducto), fuente, interpretacion });
   }
   if (["stock_bajo", "agotados"].includes(peticion.intencion)) {
-    const base = elegidos.length ? elegidos : productos;
+    const base = elegidos.length || peticion.categoria || peticion.stock_filtro ? elegidos : productos;
     const filtrados = base.filter((p) => peticion.intencion === "agotados" ? p.stock === 0 : p.stock <= p.stock_minimo)
       .sort((a, b) => a.stock - a.stock_minimo - (b.stock - b.stock_minimo) || a.id - b.id);
     const lista = filtrados.slice(0, peticion.limite);
@@ -135,7 +141,7 @@ export async function resolverChat(supabase: SupabaseClient, uid: string, entrad
       fuente: "productos y pedidos con su detalle, accesibles en Supabase", periodo: detallePeriodo, interpretacion,
       nota: "El inventario es actual. Las ventas incluyen los pedidos no anulados visibles para tu usuario dentro del período indicado." }, []);
   }
-  const base = elegidos.length ? elegidos : productos;
+  const base = elegidos.length || peticion.categoria || peticion.stock_filtro ? elegidos : productos;
   const ranking = base.map((p) => ({ ...filaProducto(p), unidades: ventas.ventas.get(p.id)?.unidades ?? 0 }))
     .sort((a, b) => b.unidades - a.unidades || (a.id ?? 0) - (b.id ?? 0));
   if (peticion.intencion === "ventas" && elegidos.length) {

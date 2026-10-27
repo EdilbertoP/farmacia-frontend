@@ -42,7 +42,7 @@ function route(db, generate = async () => ({ value: { texto: 'Informe orientativ
   return load('app/api/ia/route.ts', {
     '@/utils/supabase/server': { createClient: async () => db }, '@/lib/ia/domain': domain,
     '@/lib/ia/gemini': { configuracionGemini: () => ({}), generarJSON: generate },
-    '@/lib/ia/http': http, '@/lib/ia/cuota': cuota,
+    '@/lib/ia/http': http, '@/lib/ia/cuota': cuota, '@/lib/ia/agente/propuestas':{capacidades:async()=>({herramientas:['catalogo.leer','ventas.global']}),exigir:()=>{},evento:async()=>{}},
   }).POST;
 }
 

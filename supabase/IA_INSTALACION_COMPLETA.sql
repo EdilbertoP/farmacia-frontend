@@ -1,0 +1,431 @@
+-- INSTALACIÓN COMPLETA IA V3: ejecutar en el SQL Editor del proyecto existente.
+
+-- Ejecutar una vez en Supabase > SQL Editor. No altera las tablas de negocio.
+begin;
+
+create table if not exists public.ia_informes_demanda (
+  id uuid primary key default gen_random_uuid(),
+  creado_por uuid not null default auth.uid() references auth.users(id),
+  producto_id bigint not null,
+  producto text not null check (length(producto) between 1 and 200),
+  horizonte_dias integer not null check (horizonte_dias in (7,14,30)),
+  texto text not null check (length(trim(texto)) between 1 and 6000),
+  texto_original text not null check (length(texto_original) between 1 and 6000),
+  datos_base jsonb not null,
+  modelo text not null,
+  generado_en timestamptz not null,
+  confirmado boolean not null check (confirmado = true),
+  confirmado_en timestamptz not null default now()
+);
+alter table public.ia_informes_demanda enable row level security;
+drop policy if exists ia_informes_leer_propios on public.ia_informes_demanda;
+create policy ia_informes_leer_propios on public.ia_informes_demanda
+  for select to authenticated using (creado_por = (select auth.uid()));
+drop policy if exists ia_informes_confirmar_propios on public.ia_informes_demanda;
+create policy ia_informes_confirmar_propios on public.ia_informes_demanda
+  for insert to authenticated with check (creado_por = (select auth.uid()) and confirmado = true);
+revoke all on public.ia_informes_demanda from anon, authenticated;
+grant select, insert on public.ia_informes_demanda to authenticated;
+create index if not exists ia_informes_propietario_fecha
+  on public.ia_informes_demanda (creado_por, confirmado_en desc);
+
+-- Contador persistente: no puede modificarse directamente desde el navegador.
+create table if not exists public.ia_uso_diario (
+  usuario_id uuid not null references auth.users(id) on delete cascade,
+  dia date not null,
+  intentos integer not null,
+  ultima_consulta timestamptz not null,
+  primary key (usuario_id, dia)
+);
+alter table public.ia_uso_diario enable row level security;
+revoke all on public.ia_uso_diario from anon, authenticated;
+create or replace function public.ia_reservar_consulta()
+returns boolean
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  usuario uuid := auth.uid();
+  filas integer;
+begin
+  if usuario is null then return false; end if;
+  insert into public.ia_uso_diario as uso (usuario_id, dia, intentos, ultima_consulta)
+  values (usuario, (now() at time zone 'America/Guatemala')::date, 1, now())
+  on conflict (usuario_id, dia) do update
+  set intentos = uso.intentos + 1, ultima_consulta = now()
+  where uso.intentos < 30 and uso.ultima_consulta <= now() - interval '10 seconds';
+  get diagnostics filas = row_count;
+  return filas = 1;
+end;
+$$;
+revoke all on function public.ia_reservar_consulta() from public, anon;
+grant execute on function public.ia_reservar_consulta() to authenticated;
+
+-- Indicador de uso: solo información de la sesión actual, sin gastar consultas.
+create or replace function public.ia_estado_uso()
+returns jsonb
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select jsonb_build_object(
+    'intentos', coalesce(u.intentos, 0),
+    'limite', 30,
+    'restantes', greatest(0, 30 - coalesce(u.intentos, 0)),
+    'espera_segundos', case when u.ultima_consulta is null then 0
+      else greatest(0, ceil(extract(epoch from (u.ultima_consulta + interval '10 seconds' - now())))::integer) end
+  )
+  from (select auth.uid() as id) sesion
+  left join public.ia_uso_diario u
+    on u.usuario_id = sesion.id and u.dia = (now() at time zone 'America/Guatemala')::date
+  where sesion.id is not null;
+$$;
+revoke all on function public.ia_estado_uso() from public, anon;
+grant execute on function public.ia_estado_uso() to authenticated;
+commit;
+
+
+-- Ejecutar DESPUÉS de IA_GEMINI.sql. No reemplaza los procedimientos comerciales existentes.
+begin;
+create table if not exists public.ia_permisos (
+  rol text not null, herramienta text not null, permitido boolean not null default false,
+  primary key (rol,herramienta)
+);
+alter table public.ia_permisos enable row level security;
+revoke all on public.ia_permisos from anon,authenticated;
+insert into public.ia_permisos(rol,herramienta,permitido)
+select 'admin', h, true from unnest(array['catalogo.leer','inventario.leer','pedido.leer','ventas.global','ventas.leer','producto.crear','producto.actualizar','producto.precio','producto.desactivar','categoria.crear','categoria.actualizar','categoria.eliminar','inventario.entrada','inventario.ajuste','pedido.crear','pedido.anular','analisis.guardar','auditoria.leer','informe.exportar']) h
+on conflict do nothing;
+insert into public.ia_permisos(rol,herramienta,permitido)
+select 'vendedor',h,true from unnest(array['catalogo.leer','pedido.leer','pedido.crear','analisis.guardar']) h
+on conflict do nothing;
+
+create table if not exists public.ia_propuestas (
+  id uuid primary key default gen_random_uuid(), usuario_id uuid not null references auth.users(id),
+  herramienta text not null, datos jsonb not null, antes jsonb not null default '{}',
+  revision integer not null default 1 check (revision>0),
+  estado text not null default 'pendiente' check (estado in ('pendiente','ejecutada','rechazada','fallida')),
+  resultado jsonb, creada_en timestamptz not null default now(), vence_en timestamptz not null default now()+interval '20 minutes',
+  revisada_en timestamptz, clave uuid not null, unique(usuario_id,clave)
+);
+create table if not exists public.ia_eventos (
+  id bigint generated by default as identity primary key, usuario_id uuid references auth.users(id),
+  propuesta_id uuid references public.ia_propuestas(id), evento text not null, herramienta text,
+  codigo text, duracion_ms integer, consumo jsonb, detalle jsonb not null default '{}', fecha timestamptz not null default now()
+);
+alter table public.ia_propuestas enable row level security;
+alter table public.ia_eventos enable row level security;
+revoke all on public.ia_propuestas,public.ia_eventos from anon,authenticated;
+create index if not exists ia_propuestas_usuario on public.ia_propuestas(usuario_id,creada_en desc);
+create index if not exists ia_eventos_usuario on public.ia_eventos(usuario_id,fecha desc);
+
+create or replace function public.ia_tiene_permiso(p_herramienta text) returns boolean
+language sql stable security definer set search_path=pg_catalog,public,pg_temp as $$
+ select auth.uid() is not null and coalesce((select permitido from public.ia_permisos where rol=public.rol_actual()::text and herramienta=p_herramienta),false);
+$$;
+create or replace function public.ia_capacidades() returns jsonb
+language sql stable security definer set search_path=pg_catalog,public,pg_temp as $$
+ select jsonb_build_object('rol',public.rol_actual()::text,'herramientas',coalesce((select jsonb_agg(herramienta order by herramienta) from public.ia_permisos where rol=public.rol_actual()::text and permitido),'[]'::jsonb),
+ 'modulos',jsonb_build_object('productos',true,'categorias',true,'inventario',true,'pedidos',true,'proveedores',false,'lotes',false,'clientes',false,'compras',false,'redis',false),'version',3)
+ where auth.uid() is not null;
+$$;
+
+-- Valida y normaliza datos. Se invoca al preparar, editar Y confirmar.
+create or replace function public.ia_validar_operacion(p_herramienta text,p_datos jsonb) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare d jsonb:=p_datos; k text; p public.productos%rowtype; c public.categorias%rowtype;
+  it jsonb; linea jsonb; items jsonb:='[]'; cat bigint; v numeric; total numeric:=0; v_nombre text;
+begin
+ if not public.ia_tiene_permiso(p_herramienta) then raise exception using errcode='42501',message='PERMISOS'; end if;
+ if d is null or jsonb_typeof(d)<>'object' or pg_column_size(d)>48000 then raise exception 'DATOS_INVALIDOS'; end if;
+ if p_herramienta in ('producto.crear','producto.actualizar','producto.desactivar') then
+  for k in select jsonb_object_keys(d) loop
+   if not(k=any(array['id','codigo','nombre','descripcion','categoria_id','precio','stock_minimo','requiere_receta','activo'])) then raise exception 'CAMPO_NO_PERMITIDO'; end if;
+  end loop;
+  if p_herramienta<>'producto.crear' then
+   select * into p from public.productos where id=(d->>'id')::bigint for update;
+   if not found then raise exception 'REGISTRO_INEXISTENTE'; end if;
+   if p_herramienta='producto.desactivar' then return jsonb_build_object('id',p.id); end if;
+   if (select count(*) from jsonb_object_keys(d))<2 then raise exception 'SIN_CAMBIOS'; end if;
+  elsif d ? 'id' then raise exception 'CAMPO_NO_PERMITIDO'; end if;
+  if p_herramienta='producto.crear' and not(d ?& array['codigo','nombre','categoria_id','precio','stock_minimo','requiere_receta']) then raise exception 'FALTAN_CAMPOS'; end if;
+  if d ? 'codigo' then
+   if jsonb_typeof(d->'codigo')<>'string' then raise exception 'CODIGO_INVALIDO'; end if;
+   v_nombre:=btrim(d->>'codigo'); if v_nombre is null or length(v_nombre) not between 1 and 60 then raise exception 'CODIGO_INVALIDO'; end if;
+   perform pg_advisory_xact_lock(hashtextextended('ia-codigo:'||lower(v_nombre),0));
+   if exists(select 1 from public.productos where lower(btrim(codigo))=lower(v_nombre) and (p.id is null or id<>p.id)) then raise exception using errcode='23505',message='CODIGO_DUPLICADO'; end if;
+   d:=jsonb_set(d,'{codigo}',to_jsonb(v_nombre));
+  end if;
+  if d ? 'nombre' and (jsonb_typeof(d->'nombre')<>'string' or d->>'nombre' is null or length(btrim(d->>'nombre')) not between 1 and 200) then raise exception 'NOMBRE_INVALIDO'; end if;
+  if d ? 'descripcion' and (jsonb_typeof(d->'descripcion')<>'string' or length(d->>'descripcion')>2000) then raise exception 'DESCRIPCION_INVALIDA'; end if;
+  if d ? 'categoria_id' then
+   cat:=(d->>'categoria_id')::bigint; perform 1 from public.categorias where id=cat for key share;
+   if not found then raise exception 'CATEGORIA_INEXISTENTE'; end if;
+  end if;
+  if d ? 'precio' then
+   if p_herramienta='producto.actualizar' and not public.ia_tiene_permiso('producto.precio') then raise exception using errcode='42501',message='PERMISOS_PRECIO'; end if;
+   if jsonb_typeof(d->'precio')<>'number' then raise exception 'PRECIO_INVALIDO'; end if;
+   v:=(d->>'precio')::numeric; if v<0 or v>9999999.99 or round(v,2)<>v then raise exception 'PRECIO_INVALIDO'; end if;
+  end if;
+  if d ? 'stock_minimo' then
+   if jsonb_typeof(d->'stock_minimo')<>'number' then raise exception 'MINIMO_INVALIDO'; end if;
+   v:=(d->>'stock_minimo')::numeric; if v<0 or v>1000000 or trunc(v)<>v then raise exception 'MINIMO_INVALIDO'; end if;
+  end if;
+  if d ? 'requiere_receta' and jsonb_typeof(d->'requiere_receta')<>'boolean' then raise exception 'RECETA_INVALIDA'; end if;
+  if d ? 'activo' and jsonb_typeof(d->'activo')<>'boolean' then raise exception 'ESTADO_INVALIDO'; end if;
+  return d;
+ elsif p_herramienta in ('categoria.crear','categoria.actualizar','categoria.eliminar') then
+  for k in select jsonb_object_keys(d) loop if not(k=any(array['id','nombre'])) then raise exception 'CAMPO_NO_PERMITIDO'; end if; end loop;
+  if p_herramienta<>'categoria.crear' then
+   select * into c from public.categorias where id=(d->>'id')::bigint for update;
+   if not found then raise exception 'REGISTRO_INEXISTENTE'; end if;
+   if p_herramienta='categoria.eliminar' then
+    if exists(select 1 from public.productos where categoria_id=c.id) then raise exception 'CATEGORIA_CON_PRODUCTOS'; end if;
+    return jsonb_build_object('id',c.id);
+   end if;
+  elsif d ? 'id' then raise exception 'CAMPO_NO_PERMITIDO'; end if;
+  if jsonb_typeof(d->'nombre')<>'string' then raise exception 'NOMBRE_INVALIDO'; end if;
+  v_nombre:=btrim(d->>'nombre'); if v_nombre is null or length(v_nombre) not between 1 and 120 then raise exception 'NOMBRE_INVALIDO'; end if;
+  perform pg_advisory_xact_lock(hashtextextended('ia-categoria:'||lower(v_nombre),0));
+  if exists(select 1 from public.categorias ca where lower(btrim(ca.nombre))=lower(btrim(d->>'nombre')) and (c.id is null or id<>c.id)) then raise exception using errcode='23505',message='CATEGORIA_DUPLICADA'; end if;
+  return jsonb_set(d,'{nombre}',to_jsonb(v_nombre));
+ elsif p_herramienta in ('inventario.entrada','inventario.ajuste') then
+  if not(d ?& array['producto_id','cantidad','motivo']) then raise exception 'FALTAN_CAMPOS'; end if;
+  for k in select jsonb_object_keys(d) loop if not(k=any(array['producto_id','cantidad','motivo'])) then raise exception 'CAMPO_NO_PERMITIDO'; end if; end loop;
+  select * into p from public.productos where id=(d->>'producto_id')::bigint and activo for update;
+  if not found then raise exception 'PRODUCTO_INEXISTENTE_O_INACTIVO'; end if;
+  if jsonb_typeof(d->'cantidad')<>'number' then raise exception 'CANTIDAD_INVALIDA'; end if;
+  v:=(d->>'cantidad')::numeric;
+  if v<0 or v>1000000 or trunc(v)<>v or (v=0 and p_herramienta='inventario.entrada') then raise exception 'CANTIDAD_INVALIDA'; end if;
+  if length(btrim(coalesce(d->>'motivo',''))) not between 3 and 500 then raise exception 'MOTIVO_OBLIGATORIO'; end if;
+  return d;
+ elsif p_herramienta='pedido.crear' then
+  for k in select jsonb_object_keys(d) loop if not(k=any(array['cliente_nombre','items'])) then raise exception 'CAMPO_NO_PERMITIDO'; end if; end loop;
+  if jsonb_typeof(d->'items')<>'array' or jsonb_array_length(d->'items') not between 1 and 20 then raise exception 'ITEMS_INVALIDOS'; end if;
+  if length(coalesce(d->>'cliente_nombre','Consumidor final')) not between 1 and 150 then raise exception 'CLIENTE_INVALIDO'; end if;
+  -- Orden estable de locks evita interbloqueos entre pedidos simultáneos.
+  for it in select value from jsonb_array_elements(d->'items') order by (value->>'producto_id')::bigint loop
+   for k in select jsonb_object_keys(it) loop if not(k=any(array['producto_id','cantidad','precio_unitario'])) then raise exception 'CAMPO_NO_PERMITIDO'; end if; end loop;
+   if jsonb_typeof(it->'cantidad')<>'number' then raise exception 'CANTIDAD_INVALIDA'; end if;
+   v:=(it->>'cantidad')::numeric; if v<=0 or v>1000000 or trunc(v)<>v then raise exception 'CANTIDAD_INVALIDA'; end if;
+   if exists(select 1 from jsonb_array_elements(items) x where x->>'producto_id'=it->>'producto_id') then raise exception 'PRODUCTO_REPETIDO'; end if;
+   select * into p from public.productos where id=(it->>'producto_id')::bigint and activo for update;
+   if not found then raise exception 'PRODUCTO_INEXISTENTE_O_INACTIVO'; end if;
+   if p.stock<v then raise exception 'STOCK_INSUFICIENTE'; end if;
+   -- Se ignora cualquier precio proporcionado: siempre se reconstruye el precio oficial.
+   items:=items||jsonb_build_array(jsonb_build_object('producto_id',p.id,'cantidad',v,'precio_unitario',p.precio));
+   total:=total+v*p.precio;
+  end loop;
+  return jsonb_build_object('cliente_nombre',coalesce(nullif(btrim(d->>'cliente_nombre'),''),'Consumidor final'),'items',items);
+ elsif p_herramienta='pedido.anular' then
+  for k in select jsonb_object_keys(d) loop if not(k=any(array['id','motivo'])) then raise exception 'CAMPO_NO_PERMITIDO'; end if; end loop;
+  perform 1 from public.pedidos where id=(d->>'id')::bigint and estado::text<>'anulado' for update;
+  if not found then raise exception 'PEDIDO_INEXISTENTE_O_ANULADO'; end if;
+  if length(btrim(coalesce(d->>'motivo',''))) not between 3 and 500 then raise exception 'MOTIVO_OBLIGATORIO'; end if;
+  return d;
+ elsif p_herramienta='analisis.guardar' then
+  if not(d ?& array['tipo','texto','resultados','modelo']) then raise exception 'FALTAN_CAMPOS'; end if;
+  for k in select jsonb_object_keys(d) loop if not(k=any(array['tipo','texto','resultados','modelo','cantidades'])) then raise exception 'CAMPO_NO_PERMITIDO'; end if; end loop;
+  if d->>'tipo' not in ('informe','reposicion','clasificacion') or length(btrim(coalesce(d->>'texto',''))) not between 1 and 12000 or jsonb_typeof(d->'resultados')<>'object' then raise exception 'ANALISIS_INVALIDO'; end if;
+  if d->>'tipo'='reposicion' then
+   if not(d?'cantidades') or jsonb_typeof(d->'cantidades')<>'array' or jsonb_array_length(d->'cantidades')>20 then raise exception 'CANTIDADES_INVALIDAS'; end if;
+   for it in select value from jsonb_array_elements(d->'cantidades') loop
+    if jsonb_typeof(it->'cantidad')<>'number' or (it->>'cantidad')::numeric<0 or (it->>'cantidad')::numeric>1000000 or trunc((it->>'cantidad')::numeric)<>(it->>'cantidad')::numeric then raise exception 'CANTIDAD_INVALIDA'; end if;
+    if not exists(select 1 from jsonb_array_elements(d->'resultados'->'productos') x where x->>'id'=it->>'producto_id') then raise exception 'PRODUCTO_FUERA_DEL_ANALISIS'; end if;
+   end loop;
+   for it in select value from jsonb_array_elements(d->'resultados'->'productos') loop
+    select * into p from public.productos where id=(it->>'id')::bigint and activo;
+    if not found or p.stock is distinct from (it->>'stock')::integer or p.stock_minimo is distinct from (it->>'minimo')::integer then raise exception 'ANALISIS_DESACTUALIZADO'; end if;
+   end loop;
+  end if;
+  return d;
+ end if;
+ raise exception 'HERRAMIENTA_NO_PERMITIDA';
+end;
+$$;
+
+create or replace function public.ia_instantanea(p_herramienta text,p_datos jsonb) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare r jsonb;
+begin
+ if p_herramienta in ('producto.actualizar','producto.desactivar') then
+  select to_jsonb(p) into r from public.productos p where id=(p_datos->>'id')::bigint;
+ elsif p_herramienta in ('categoria.actualizar','categoria.eliminar') then
+  select to_jsonb(c) into r from public.categorias c where id=(p_datos->>'id')::bigint;
+ elsif p_herramienta in ('inventario.entrada','inventario.ajuste') then
+  select to_jsonb(p) into r from public.productos p where id=(p_datos->>'producto_id')::bigint;
+ elsif p_herramienta='pedido.crear' then
+  select coalesce(jsonb_agg(jsonb_build_object('id',p.id,'nombre',p.nombre,'codigo',p.codigo,'precio',p.precio,'stock',p.stock,'activo',p.activo) order by p.id),'[]') into r
+  from public.productos p where p.id in (select (x->>'producto_id')::bigint from jsonb_array_elements(p_datos->'items') x);
+ elsif p_herramienta='pedido.anular' then
+  select jsonb_build_object('id',p.id,'estado',p.estado,'total',p.total) into r from public.pedidos p where id=(p_datos->>'id')::bigint;
+ else r:='{}'; end if;
+ return coalesce(r,'{}');
+end;
+$$;
+
+create or replace function public.ia_preparar_propuesta(p_herramienta text,p_datos jsonb,p_clave uuid) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare d jsonb; r public.ia_propuestas%rowtype;
+begin
+ if auth.uid() is null then raise exception using errcode='42501',message='SESION'; end if;
+ if not public.ia_tiene_permiso(p_herramienta) then raise exception using errcode='42501',message='PERMISOS'; end if;
+ perform pg_advisory_xact_lock(hashtextextended(auth.uid()::text||p_clave::text,0));
+ select * into r from public.ia_propuestas where usuario_id=auth.uid() and clave=p_clave;
+ if found then return to_jsonb(r); end if;
+ d:=public.ia_validar_operacion(p_herramienta,p_datos);
+ insert into public.ia_propuestas(usuario_id,herramienta,datos,antes,clave)
+ values(auth.uid(),p_herramienta,d,public.ia_instantanea(p_herramienta,d),p_clave) returning * into r;
+ insert into public.ia_eventos(usuario_id,propuesta_id,evento,herramienta,detalle) values(auth.uid(),r.id,'propuesta_generada',p_herramienta,jsonb_build_object('revision',r.revision));
+ return to_jsonb(r);
+end;
+$$;
+create or replace function public.ia_revisar_propuesta(p_id uuid,p_revision integer,p_datos jsonb) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare r public.ia_propuestas%rowtype; d jsonb;
+begin
+ select * into r from public.ia_propuestas where id=p_id and usuario_id=auth.uid() for update;
+ if not found then raise exception using errcode='42501',message='PROPUESTA_INACCESIBLE'; end if;
+ if r.revision<>p_revision or r.estado in ('ejecutada','rechazada') then raise exception 'VERSION_O_ESTADO_INVALIDO'; end if;
+ -- El informe puede corregirse, pero no sustituir sus cifras calculadas ni el modelo.
+ if r.herramienta='analisis.guardar' and ((p_datos->'resultados') is distinct from (r.datos->'resultados') or (p_datos->'modelo') is distinct from (r.datos->'modelo') or (p_datos->'tipo') is distinct from (r.datos->'tipo')) then raise exception 'RESULTADOS_NO_EDITABLES'; end if;
+ d:=public.ia_validar_operacion(r.herramienta,p_datos);
+ update public.ia_propuestas set datos=d,antes=public.ia_instantanea(r.herramienta,d),revision=revision+1,estado='pendiente',resultado=null,vence_en=now()+interval '20 minutes',revisada_en=now() where id=r.id returning * into r;
+ insert into public.ia_eventos(usuario_id,propuesta_id,evento,herramienta,detalle) values(auth.uid(),r.id,'propuesta_revisada',r.herramienta,jsonb_build_object('revision',r.revision));
+ return to_jsonb(r);
+end;
+$$;
+create or replace function public.ia_confirmar_propuesta(p_id uuid,p_revision integer,p_confirmado boolean) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare r public.ia_propuestas%rowtype; d jsonb; actual jsonb; p public.productos%rowtype; c public.categorias%rowtype;
+  v_resultado jsonb; entidad_id bigint; items jsonb; v_codigo_error text; it jsonb; stock_previo numeric; total_oficial numeric;
+begin
+ select * into r from public.ia_propuestas where id=p_id and usuario_id=auth.uid() for update;
+ if not found then raise exception using errcode='42501',message='PROPUESTA_INACCESIBLE'; end if;
+ if not public.ia_tiene_permiso(r.herramienta) then raise exception using errcode='42501',message='PERMISOS'; end if;
+ if p_confirmado is distinct from true or r.revision<>p_revision then raise exception 'CONFIRMACION_O_VERSION_INVALIDA'; end if;
+ if r.estado='ejecutada' then return to_jsonb(r); end if; -- Idempotencia: devuelve el mismo resultado sin repetir la operación.
+ if r.estado<>'pendiente' then raise exception 'ESTADO_INVALIDO'; end if;
+ begin
+  if r.vence_en<now() then raise exception 'PROPUESTA_CADUCADA'; end if;
+  d:=public.ia_validar_operacion(r.herramienta,r.datos); -- locks y reglas vigentes, no valores del cliente.
+  actual:=public.ia_instantanea(r.herramienta,d);
+  if actual is distinct from r.antes then raise exception 'CONFLICTO_ACTUALIZACION'; end if;
+  -- Compatibilidad con triggers/procedimientos existentes que resuelven tablas en public.
+  perform set_config('search_path','pg_catalog,public,pg_temp',true);
+  if r.herramienta='producto.crear' then
+   insert into public.productos(codigo,nombre,descripcion,categoria_id,precio,stock,stock_minimo,requiere_receta,activo)
+   values(d->>'codigo',btrim(d->>'nombre'),coalesce(d->>'descripcion',''),(d->>'categoria_id')::bigint,(d->>'precio')::numeric,0,(d->>'stock_minimo')::integer,(d->>'requiere_receta')::boolean,coalesce((d->>'activo')::boolean,true)) returning * into p;
+   v_resultado:=jsonb_build_object('entidad','producto','registro',to_jsonb(p));
+  elsif r.herramienta='producto.actualizar' then
+   update public.productos set codigo=case when d?'codigo' then d->>'codigo' else codigo end,nombre=case when d?'nombre' then btrim(d->>'nombre') else nombre end,
+    descripcion=case when d?'descripcion' then d->>'descripcion' else descripcion end,categoria_id=case when d?'categoria_id' then (d->>'categoria_id')::bigint else categoria_id end,
+    precio=case when d?'precio' then (d->>'precio')::numeric else precio end,stock_minimo=case when d?'stock_minimo' then (d->>'stock_minimo')::integer else stock_minimo end,
+    requiere_receta=case when d?'requiere_receta' then (d->>'requiere_receta')::boolean else requiere_receta end,activo=case when d?'activo' then (d->>'activo')::boolean else activo end
+   where id=(d->>'id')::bigint returning * into p;
+   v_resultado:=jsonb_build_object('entidad','producto','registro',to_jsonb(p));
+  elsif r.herramienta='producto.desactivar' then
+   update public.productos set activo=false where id=(d->>'id')::bigint returning * into p;
+   v_resultado:=jsonb_build_object('entidad','producto','registro',to_jsonb(p));
+  elsif r.herramienta='categoria.crear' then
+   insert into public.categorias(nombre) values(d->>'nombre') returning * into c;
+   v_resultado:=jsonb_build_object('entidad','categoria','registro',to_jsonb(c));
+  elsif r.herramienta='categoria.actualizar' then
+   update public.categorias set nombre=d->>'nombre' where id=(d->>'id')::bigint returning * into c;
+   v_resultado:=jsonb_build_object('entidad','categoria','registro',to_jsonb(c));
+  elsif r.herramienta='categoria.eliminar' then
+   delete from public.categorias where id=(d->>'id')::bigint returning * into c;
+   v_resultado:=jsonb_build_object('entidad','categoria_eliminada','registro',to_jsonb(c));
+  elsif r.herramienta in ('inventario.entrada','inventario.ajuste') then
+   perform set_config('search_path','pg_catalog,public,pg_temp',true);
+   perform public.app_registrar_movimiento((d->>'producto_id')::integer,case when r.herramienta='inventario.entrada' then 'entrada' else 'ajuste' end,(d->>'cantidad')::integer,d->>'motivo');
+   select * into p from public.productos where id=(d->>'producto_id')::bigint;
+   if p.stock<>(case when r.herramienta='inventario.entrada' then (r.antes->>'stock')::numeric+(d->>'cantidad')::numeric else (d->>'cantidad')::numeric end) then raise exception 'VERIFICACION_FALLIDA'; end if;
+   v_resultado:=jsonb_build_object('entidad','movimiento','registro',to_jsonb(p));
+  elsif r.herramienta='pedido.crear' then
+   select jsonb_agg(jsonb_build_object('producto_id',x->'producto_id','cantidad',x->'cantidad')) into items from jsonb_array_elements(d->'items') x;
+   perform set_config('search_path','pg_catalog,public,pg_temp',true);
+   entidad_id:=public.app_registrar_pedido(d->>'cliente_nombre',items);
+   if entidad_id is null or not exists(select 1 from public.pedidos pe where pe.id=entidad_id) then raise exception 'VERIFICACION_FALLIDA'; end if;
+   select sum((x->>'cantidad')::numeric*(x->>'precio_unitario')::numeric) into total_oficial from jsonb_array_elements(d->'items') x;
+   if not exists(select 1 from public.pedidos pe where pe.id=entidad_id and pe.total=total_oficial and pe.estado::text<>'anulado') then raise exception 'VERIFICACION_FALLIDA'; end if;
+   for it in select value from jsonb_array_elements(d->'items') loop
+    select (x->>'stock')::numeric into stock_previo from jsonb_array_elements(r.antes) x where x->>'id'=it->>'producto_id';
+    if not exists(select 1 from public.productos pr where pr.id=(it->>'producto_id')::bigint and pr.stock=stock_previo-(it->>'cantidad')::integer) then raise exception 'VERIFICACION_FALLIDA'; end if;
+    if not exists(select 1 from public.pedido_detalle pd where pd.pedido_id=entidad_id and pd.producto_id=(it->>'producto_id')::bigint and pd.cantidad=(it->>'cantidad')::integer and pd.precio_unitario=(it->>'precio_unitario')::numeric) then raise exception 'VERIFICACION_FALLIDA'; end if;
+   end loop;
+   v_resultado:=jsonb_build_object('entidad','pedido','id',entidad_id,'registro',(select to_jsonb(pe) from public.pedidos pe where id=entidad_id));
+  elsif r.herramienta='pedido.anular' then
+   perform set_config('search_path','pg_catalog,public,pg_temp',true);
+   perform public.app_anular_pedido((d->>'id')::integer,d->>'motivo');
+   if not exists(select 1 from public.pedidos pe where id=(d->>'id')::bigint and estado::text='anulado') then raise exception 'VERIFICACION_FALLIDA'; end if;
+   v_resultado:=jsonb_build_object('entidad','pedido_anulado','id',(d->>'id')::bigint,'registro',(select to_jsonb(pe) from public.pedidos pe where id=(d->>'id')::bigint));
+  elsif r.herramienta='analisis.guardar' then
+   v_resultado:=jsonb_build_object('entidad','analisis','guardado',true,'tipo',d->>'tipo');
+  else raise exception 'HERRAMIENTA_NO_PERMITIDA'; end if;
+  update public.ia_propuestas set estado='ejecutada',resultado=v_resultado,revisada_en=now() where id=r.id returning * into r;
+  insert into public.ia_eventos(usuario_id,propuesta_id,evento,herramienta,detalle) values(auth.uid(),r.id,'operacion_ejecutada',r.herramienta,jsonb_build_object('revision',r.revision,'antes',r.antes,'despues',r.resultado));
+ exception when others then
+  -- El bloque interno revierte TODA escritura comercial antes de registrar un fallo seguro.
+  v_codigo_error:=case when sqlstate='42501' then 'PERMISOS' when sqlstate='23505' then 'DUPLICADO' when sqlstate='23503' then 'DEPENDENCIAS'
+    when sqlstate='42883' then 'PROCEDIMIENTO_NO_DISPONIBLE' when sqlerrm in ('CONFLICTO_ACTUALIZACION','PROPUESTA_CADUCADA','STOCK_INSUFICIENTE','CATEGORIA_CON_PRODUCTOS','PEDIDO_INEXISTENTE_O_ANULADO','ANALISIS_DESACTUALIZADO') then sqlerrm else 'VALIDACION_RECHAZADA' end;
+  update public.ia_propuestas set estado='fallida',resultado=jsonb_build_object('ok',false,'codigo',v_codigo_error),revisada_en=now() where id=r.id returning * into r;
+  insert into public.ia_eventos(usuario_id,propuesta_id,evento,herramienta,codigo) values(auth.uid(),r.id,'operacion_rechazada',r.herramienta,v_codigo_error);
+ end;
+ return to_jsonb(r);
+end;
+$$;
+create or replace function public.ia_rechazar_propuesta(p_id uuid,p_revision integer) returns jsonb
+language plpgsql security definer set search_path='' as $$
+declare r public.ia_propuestas%rowtype;
+begin
+ select * into r from public.ia_propuestas where id=p_id and usuario_id=auth.uid() for update;
+ if not found then raise exception using errcode='42501',message='PROPUESTA_INACCESIBLE'; end if;
+ if r.estado='ejecutada' or r.revision<>p_revision then raise exception 'VERSION_O_ESTADO_INVALIDO'; end if;
+ update public.ia_propuestas set estado='rechazada',revisada_en=now() where id=r.id returning * into r;
+ insert into public.ia_eventos(usuario_id,propuesta_id,evento,herramienta) values(auth.uid(),r.id,'propuesta_rechazada',r.herramienta);
+ return to_jsonb(r);
+end;
+$$;
+create or replace function public.ia_obtener_propuesta(p_id uuid) returns jsonb
+language sql stable security definer set search_path='' as $$ select to_jsonb(p) from public.ia_propuestas p where id=p_id and usuario_id=auth.uid(); $$;
+create or replace function public.ia_historial(p_limite integer default 20) returns jsonb
+language sql stable security definer set search_path='' as $$
+ select coalesce(jsonb_agg(to_jsonb(p) order by creada_en desc),'[]') from (select * from public.ia_propuestas where usuario_id=auth.uid() order by creada_en desc limit least(greatest(p_limite,1),50)) p;
+$$;
+create or replace function public.ia_registrar_evento(p_evento text,p_herramienta text,p_codigo text,p_duracion_ms integer,p_consumo jsonb default null) returns void
+language plpgsql security definer set search_path='' as $$
+begin
+ if auth.uid() is null then return; end if;
+ if p_evento not in ('solicitud_completada','solicitud_fallida','validacion_rechazada','cache_error','exportacion') then raise exception 'EVENTO_INVALIDO'; end if;
+ insert into public.ia_eventos(usuario_id,evento,herramienta,codigo,duracion_ms,consumo)
+ values(auth.uid(),left(p_evento,60),left(p_herramienta,80),left(p_codigo,60),least(greatest(p_duracion_ms,0),600000),case when pg_column_size(p_consumo)<1000 then p_consumo else null end);
+end;
+$$;
+create or replace function public.ia_auditoria(p_limite integer default 50) returns jsonb
+language plpgsql stable security definer set search_path='' as $$
+begin
+ if not public.ia_tiene_permiso('auditoria.leer') then raise exception using errcode='42501',message='PERMISOS'; end if;
+ return (select coalesce(jsonb_agg(to_jsonb(e) order by fecha desc),'[]') from (select * from public.ia_eventos order by fecha desc limit least(greatest(p_limite,1),100)) e);
+end;
+$$;
+create or replace function public.ia_auditar_descripcion() returns trigger
+language plpgsql security definer set search_path='' as $$
+begin
+ if old.descripcion is distinct from new.descripcion then
+  insert into public.ia_eventos(usuario_id,evento,herramienta,detalle)
+  values(auth.uid(),'descripcion_actualizada','producto.actualizar',jsonb_build_object('producto_id',new.id,'anterior',old.descripcion,'nueva',new.descripcion));
+ end if;
+ return new;
+end;
+$$;
+drop trigger if exists ia_auditoria_descripcion on public.productos;
+create trigger ia_auditoria_descripcion after update of descripcion on public.productos for each row execute function public.ia_auditar_descripcion();
+revoke all on function public.ia_auditar_descripcion() from public,anon,authenticated;
+-- Los validadores internos NO son herramientas públicas invocables por el modelo o el navegador.
+revoke all on function public.ia_validar_operacion(text,jsonb),public.ia_instantanea(text,jsonb) from public,anon,authenticated;
+revoke all on function public.ia_tiene_permiso(text),public.ia_capacidades(),public.ia_preparar_propuesta(text,jsonb,uuid),public.ia_revisar_propuesta(uuid,integer,jsonb),public.ia_confirmar_propuesta(uuid,integer,boolean),public.ia_rechazar_propuesta(uuid,integer),public.ia_obtener_propuesta(uuid),public.ia_historial(integer),public.ia_registrar_evento(text,text,text,integer,jsonb),public.ia_auditoria(integer) from public,anon;
+grant execute on function public.ia_tiene_permiso(text),public.ia_capacidades(),public.ia_preparar_propuesta(text,jsonb,uuid),public.ia_revisar_propuesta(uuid,integer,jsonb),public.ia_confirmar_propuesta(uuid,integer,boolean),public.ia_rechazar_propuesta(uuid,integer),public.ia_obtener_propuesta(uuid),public.ia_historial(integer),public.ia_registrar_evento(text,text,text,integer,jsonb),public.ia_auditoria(integer) to authenticated;
+commit;

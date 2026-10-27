@@ -1,3 +1,7 @@
+# Agente inteligente V3
+
+Empieza por **[AGENTE_V3_INSTALACION.md](AGENTE_V3_INSTALACION.md)**. Incluye CRUD con confirmación, permisos, auditoría, análisis, reposición e instalación SQL. Consulta la **[matriz de requisitos](MATRIZ_REQUISITOS_V3.md)** para el alcance exacto.
+
 Consulta **[CHATBOT_IA.md](CHATBOT_IA.md)** para activar el botón global, preguntas rápidas, contexto y comprobación de conexión con `gemini-3.5-flash-lite`.
 
 # Asistente IA e integración de Gemini
